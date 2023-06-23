@@ -58,6 +58,7 @@ struct ConnectionOpts {
 
 #[derive(ArgEnum, Clone, Debug)]
 enum BondMode {
+    Unset = -1,
     RoundRobin = 0,
     ActiveBackup = 1,
     XOR = 2,
@@ -98,6 +99,9 @@ impl TryFrom<ConnectionOpts> for BondOpts {
             None => return Err(anyhow!("Second wired interface name not specified")),
         };
 
+        // TODO: Further verification of args depending on operation.
+        //       Allow for some empty types (e.g. no mode or backing wired ifnames if getting status of bond)
+        //       Will require not throwing errors above if not found and setting sane defaults (e.g. "")
         Ok(BondOpts {
             bond_ifname,
             bond_mode,
@@ -159,14 +163,50 @@ async fn delete_connection(
 async fn create_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
     let opts = BondOpts::try_from(c_opts)?;
 
+    // Create bond structs here so we can comprehensively search
+    // for any matching existing connection, should it exist
+    // Does not add connection to Network Manager, that happens later
+    let bond_conn = create_bond_connection(&opts.bond_ifname, opts.bond_mode)?;
+
     // Make sure a bond connection with same name does not already exist
-    if get_connection(&client, &opts.bond_ifname, DeviceType::Bond).is_some() {
+    // If bond connection using same devices does not exist, good to continue
+    // TODO: What if using only one of backing Wired interfaces????
+    if get_connection(&client, DeviceType::Bond, &bond_conn).is_some() {
         warn!("Bond connection already exists, quitting...");
         return Err(anyhow!("Bond connection already exists, quitting..."));
     }
 
-    // Get backing devices for provided wired interfaces
-    match client.device_by_iface(&opts.wired_ifname1) {
+    // Deactivate matching active ethernet connections. Otherwise, newly-created bond
+    // connection will stay in "Activating" state until backing slave connections are
+    // active (which the existing non-slave ethernet connections preempt from doing so).
+    info!("Deactivating any existing wired connections which use same interfaces as bond slave wired connection ifnames--\"{}\" and \"{}\"", &opts.wired_ifname1, &opts.wired_ifname2);
+
+    // Create non-bond interface ethernet connections, otherwise searching
+    // for the connections may return a bond slave connection. We want the non-bond connection
+    let existing_wired_conn1 = create_wired_connection(&opts.wired_ifname1, None)?;
+    let existing_wired_conn2 = create_wired_connection(&opts.wired_ifname2, None)?;
+    match get_active_connection(&client, DeviceType::Ethernet, &existing_wired_conn1) {
+        Some(c1) => {
+            client.deactivate_connection_future(&c1).await?;
+        }
+        None => debug!(
+            "No matching active wired connection for interface \"{}\"",
+            &opts.wired_ifname1
+        ),
+    };
+
+    match get_active_connection(&client, DeviceType::Ethernet, &existing_wired_conn2) {
+        Some(c2) => {
+            client.deactivate_connection_future(&c2).await?;
+        }
+        None => debug!(
+            "No matching active wired connection for interface \"{}\"",
+            &opts.wired_ifname2
+        ),
+    };
+
+    // Check that backing devices for provided wired interfaces exist
+    let wired_dev1 = match client.device_by_iface(&opts.wired_ifname1) {
         Some(device) => device,
         None => {
             warn!(
@@ -180,7 +220,7 @@ async fn create_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
         }
     };
 
-    match client.device_by_iface(&opts.wired_ifname2) {
+    let wired_dev2 = match client.device_by_iface(&opts.wired_ifname2) {
         Some(device) => device,
         None => {
             warn!(
@@ -194,59 +234,37 @@ async fn create_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
         }
     };
 
-    // Bond connection doesn't exist and backing ethernet connections exist,
-    // so create new bond connection (including backing slave ethernet connections)
+    // Bond connection doesn't exist and backing ethernet devices exist,
+    // so create new bond connection (using newly-created wired connections
+    // which are backed by existing wired devices)
     info!("Creating bond connection");
-    let bond_conn = create_bond_connection(&opts.bond_ifname, opts.bond_mode)?;
+    let wired_conn1 = create_wired_connection(&opts.wired_ifname1, Some(&opts.bond_ifname))?;
+    let wired_conn2 = create_wired_connection(&opts.wired_ifname2, Some(&opts.bond_ifname))?;
+
     client.add_connection_future(&bond_conn, true).await?;
+    let wired_conn1 = client.add_connection_future(&wired_conn1, true).await?;
+    let wired_conn2 = client.add_connection_future(&wired_conn2, true).await?;
 
-    let wired_conn1 = create_wired_connection(&opts.wired_ifname1, &opts.bond_ifname)?;
-    client.add_connection_future(&wired_conn1, true).await?;
-
-    let wired_conn2 = create_wired_connection(&opts.wired_ifname2, &opts.bond_ifname)?;
-    client.add_connection_future(&wired_conn2, true).await?;
-
-    // Deactivate non-slave ethernet connections. Otherwise, newly-created bond
-    // connection will stay in "Activating" state until backing slave connections are
-    // active (which the existing non-slave ethernet connections preempt from doing so).
-    let existing_wired_conn1 =
-        match get_active_connection(&client, &opts.wired_ifname1, DeviceType::Ethernet) {
-            Some(c) => c,
-            None => {
-                return Err(anyhow!(
-                    "Required wired connection \"{}\" does not exist, quitting...",
-                    &opts.wired_ifname1
-                ));
-            }
-        };
-
-    let existing_wired_conn2 =
-        match get_active_connection(&client, &opts.wired_ifname2, DeviceType::Ethernet) {
-            Some(c) => c,
-            None => {
-                return Err(anyhow!(
-                    "Required wired connection \"{}\" does not exist, quitting...",
-                    &opts.wired_ifname2
-                ));
-            }
-        };
-
-    // Only deactivate both existing if we're able to find both
-    // Bond interface will transition to active after these two are successfully downed
-    info!("Deactivating existing wired connections which use same interfaces as bond slave wired connection ifnames--\"{}\" and \"{}\"", &opts.wired_ifname1, &opts.wired_ifname2);
-    client
-        .deactivate_connection_future(&existing_wired_conn1)
-        .await?;
-    client
-        .deactivate_connection_future(&existing_wired_conn2)
-        .await?;
-
-    // TODO: Handle case where existing conns are down and downing again doesn't automatically up the Wired IFs
-    // Just up all three tbh
+    // Connections are created, connect backing devices to enable the connections.
+    // If everything is normal, adding the connections should activate them as
+    // we have already downed any other connections that were using the backing devices.
+    //
+    // On off chance that devices are deactivating using the `ip link set down`
+    // command, for example, this will reactivate the devices.
+    //
+    // Non-Network Manager deactivating devices thru software will result in NetworkManager
+    // not realizing that the devices or connections are inactive. Simply re-activating
+    // the connection will reset this, assuming no other software gets in the way.
     info!(
         "Activating bond slave wired connections with ifnames \"{}\" and \"{}\"",
         &opts.wired_ifname1, &opts.wired_ifname2
     );
+    client
+        .activate_connection_future(Some(&wired_conn1), Some(&wired_dev1), None)
+        .await?;
+    client
+        .activate_connection_future(Some(&wired_conn2), Some(&wired_dev2), None)
+        .await?;
 
     Ok(())
 }
@@ -254,10 +272,14 @@ async fn create_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
 async fn delete_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
     let opts = BondOpts::try_from(c_opts)?;
 
+    let bond_conn = create_bond_connection(&opts.bond_ifname, opts.bond_mode)?;
+    let wired_conn1 = create_wired_connection(&opts.wired_ifname1, Some(&opts.bond_ifname))?;
+    let wired_conn2 = create_wired_connection(&opts.wired_ifname2, Some(&opts.bond_ifname))?;
+
     // Deactivate bond connection
     // Automatically deactivates slave connections on success
     info!("Deactivating bond connection with interface \"{}\" (and associated slave wired connections)", opts.bond_ifname);
-    match get_active_connection(&client, &opts.bond_ifname, DeviceType::Bond) {
+    match get_active_connection(&client, DeviceType::Bond, &bond_conn) {
         Some(c) => {
             client.deactivate_connection_future(&c).await?;
             info!("Bond connection and associated interfaces deactivated");
@@ -275,7 +297,7 @@ async fn delete_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
         "Deleting bond connection with interface \"{}\"",
         opts.bond_ifname
     );
-    match get_connection(&client, &opts.bond_ifname, DeviceType::Bond) {
+    match get_connection(&client, DeviceType::Bond, &bond_conn) {
         Some(c) => {
             c.delete_future().await?;
             info!("Bond connection deleted");
@@ -289,7 +311,7 @@ async fn delete_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
     };
 
     // Delete first wired slave connection
-    match get_connection(&client, &opts.wired_ifname1, DeviceType::Ethernet) {
+    match get_connection(&client, DeviceType::Ethernet, &wired_conn1) {
         Some(c) => c.delete_future().await?,
         None => {
             return Err(anyhow!(
@@ -300,7 +322,7 @@ async fn delete_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
     };
 
     // Delete second wired slave connection
-    match get_connection(&client, &opts.wired_ifname2, DeviceType::Ethernet) {
+    match get_connection(&client, DeviceType::Ethernet, &wired_conn2) {
         Some(c) => c.delete_future().await?,
         None => {
             return Err(anyhow!(
@@ -309,6 +331,8 @@ async fn delete_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
             ));
         }
     };
+
+    // TODO: Up any previously-existing interfaces?
 
     Ok(())
 }
@@ -344,7 +368,15 @@ fn create_bond_connection(bond_ifname: &str, bond_mode: BondMode) -> Result<Simp
     Ok(connection)
 }
 
-fn create_wired_connection(wired_ifname: &str, bond_ifname: &str) -> Result<SimpleConnection> {
+// Create a wired SimpleConnection for use in activating, deactivating, finding, etc
+// If bond_ifname is Some, create the wired connection as a bond slave with bond_ifname as master.
+//
+// NOTE: SimpleConnection are owned by this program. ActiveConnection and RemoteConnection
+//       are owned by the NetworkManager library
+fn create_wired_connection(
+    wired_ifname: &str,
+    bond_ifname: Option<&str>,
+) -> Result<SimpleConnection> {
     let connection = SimpleConnection::new();
 
     let s_connection = SettingConnection::new();
@@ -355,23 +387,27 @@ fn create_wired_connection(wired_ifname: &str, bond_ifname: &str) -> Result<Simp
     s_connection.set_interface_name(Some(wired_ifname));
 
     // Master is bond interface name, slave type is type of master interface (i.e. bond)
-    s_connection.set_master(Some(bond_ifname));
-    s_connection.set_slave_type(Some(&SETTING_BOND_SETTING_NAME));
+    if let Some(bond_ifname) = bond_ifname {
+        s_connection.set_master(Some(bond_ifname));
+        s_connection.set_slave_type(Some(&SETTING_BOND_SETTING_NAME));
+    }
 
     connection.add_setting(s_connection);
 
     Ok(connection)
 }
 
-// Find connection of specified DeviceType with matching ifname
+// Search for connection that matches the specified
+// device type and properties in provided connection.
 //
 // Will continue to search for connections with matching ifnames after match found
 // This done to enable verbose logging
 fn get_connection(
     client: &Client,
-    ifname: &str,
     device_type: DeviceType,
+    conn: &SimpleConnection,
 ) -> Option<RemoteConnection> {
+    let ifname = conn.interface_name()?;
     debug!("Searching for connection with ifname \"{}\"", ifname);
 
     // Only Bond and Ethernet DeviceType supported
@@ -385,24 +421,24 @@ fn get_connection(
 
     let mut matching_conn: Option<RemoteConnection> = None;
 
-    for remote_conn in client.connections().into_iter() {
-        let conn = remote_conn.upcast::<Connection>();
+    for cmp_remote_conn in client.connections().into_iter() {
+        let cmp_conn = cmp_remote_conn.upcast::<Connection>();
 
         // Get connection interface name for logging
-        let conn_ifname = match conn.interface_name() {
-            Some(c_ifname) => c_ifname,
+        let cmp_conn_ifname = match cmp_conn.interface_name() {
+            Some(c) => c,
             None => {
                 error!(
                     "Unable to get connection interface name for connection {}",
-                    conn
+                    cmp_conn
                 );
                 continue;
             }
         };
 
         let found_matching = match device_type {
-            DeviceType::Bond => matching_bond_connection(&conn, ifname),
-            DeviceType::Ethernet => matching_wired_connection(&conn, ifname),
+            DeviceType::Bond => matching_bond_connection(&conn, &cmp_conn),
+            DeviceType::Ethernet => matching_wired_connection(&conn, &cmp_conn),
             _ => {
                 // Should never get here given check at beginning of func
                 panic!(
@@ -420,7 +456,7 @@ fn get_connection(
                 ifname
             );
 
-            let remote_conn = match conn.downcast::<RemoteConnection>() {
+            let cmp_remote_conn = match cmp_conn.downcast::<RemoteConnection>() {
                 Ok(c) => c,
                 Err(_) => {
                     error!("Unable to downcast Connection to RemoteConnection");
@@ -428,7 +464,7 @@ fn get_connection(
                 }
             };
 
-            matching_conn = Some(remote_conn);
+            matching_conn = Some(cmp_remote_conn);
         } else if found_matching {
             // Already found and saved a matching connection, log any further connections
             debug!(
@@ -438,7 +474,7 @@ fn get_connection(
         } else {
             debug!(
                 "Skipping non-matching connection with interface name \"{}\"",
-                conn_ifname
+                cmp_conn_ifname
             );
         }
     }
@@ -446,43 +482,48 @@ fn get_connection(
     matching_conn
 }
 
+// Search for active connection that matches the specified
+// device type and properties in provided connection.
+//
+// Will continue to search for connections with matching ifnames after match found
+// This done to enable verbose logging
 fn get_active_connection(
     client: &Client,
-    ifname: &str,
-    // conn: &SimpleConnection,
     device_type: DeviceType,
+    conn: &SimpleConnection,
 ) -> Option<ActiveConnection> {
+    let ifname = conn.interface_name()?;
     debug!("Searching for active connection with ifname \"{}\"", ifname);
 
     let mut matching_conn: Option<ActiveConnection> = None;
 
-    for active_conn in client.active_connections().into_iter() {
+    for cmp_active_conn in client.active_connections().into_iter() {
         // Convert to Connection, so we can work with it
-        let remote_conn = match active_conn.connection() {
-            Some(conn) => conn,
+        let cmp_remote_conn = match cmp_active_conn.connection() {
+            Some(c) => c,
             None => {
-                error!("Unable to convert ActiveConnection to RemoteConnection for connection \"{:?}\"", active_conn);
+                error!("Unable to convert ActiveConnection to RemoteConnection for connection \"{:?}\"", cmp_active_conn);
                 return None;
             }
         };
 
-        let conn = remote_conn.upcast::<Connection>();
+        let cmp_conn = cmp_remote_conn.upcast::<Connection>();
 
         // Get connection interface name for logging
-        let conn_ifname = match conn.interface_name() {
-            Some(c_ifname) => c_ifname,
+        let cmp_conn_ifname = match cmp_conn.interface_name() {
+            Some(c) => c,
             None => {
                 error!(
                     "Unable to get connection interface name for connection {}",
-                    conn
+                    cmp_conn
                 );
                 continue;
             }
         };
 
         let found_matching = match device_type {
-            DeviceType::Bond => matching_bond_connection(&conn, ifname),
-            DeviceType::Ethernet => matching_wired_connection(&conn, ifname),
+            DeviceType::Bond => matching_bond_connection(&conn, &cmp_conn),
+            DeviceType::Ethernet => matching_wired_connection(&conn, &cmp_conn),
             _ => {
                 // Should never get here given check at beginning of func
                 panic!(
@@ -499,7 +540,7 @@ fn get_active_connection(
                 "Found connection with matching interface name \"{}\"",
                 ifname
             );
-            matching_conn = Some(active_conn);
+            matching_conn = Some(cmp_active_conn);
         } else if found_matching {
             // Already found and saved a matching connection, log any further connections
             warn!(
@@ -509,7 +550,7 @@ fn get_active_connection(
         } else {
             debug!(
                 "Skipping non-matching connection with interface name \"{}\"",
-                conn_ifname
+                cmp_conn_ifname
             );
         }
     }
@@ -517,15 +558,96 @@ fn get_active_connection(
     matching_conn
 }
 
-fn matching_bond_connection(conn: &Connection, ifname: &str) -> bool {
-    let conn_settings = match get_connection_settings(conn) {
-        Ok(conn_settings) => conn_settings,
-        Err(_) => {
+// Determine if provided connection for comparison `cmp_conn` is a bond connection
+// and matches desired connection `conn`
+//
+// Don't compare granular settings like bond mode, miimon, or backing network devices,
+// just backing interface name
+fn matching_bond_connection(conn: &SimpleConnection, cmp_conn: &Connection) -> bool {
+    // Get SettingConnection obj for both connection and compared connection
+    let conn_settings = match conn.setting_connection() {
+        Some(c) => c,
+        None => {
             error!("Unable to get connection settings");
             return false;
         }
     };
 
+    // Get connection id for compared connection
+    let cmp_conn_id = match conn_settings.id() {
+        Some(c) => c,
+        None => {
+            error!("Unable to get connection id");
+            return false;
+        }
+    };
+    let cmp_conn_id_str = cmp_conn_id.as_str();
+
+    // Ensure compared connection is a bond (assume connection desired is a bond)
+    match cmp_conn.setting_bond() {
+        Some(c) => {
+            debug!("Connection \"{}\" is bond connection", cmp_conn_id_str);
+            c
+        }
+        None => {
+            debug!("Connection \"{}\" is not bond connection", cmp_conn_id_str);
+            return false;
+        }
+    };
+
+    // Get ifname for both bond connections
+    let conn_ifname = match conn.interface_name() {
+        Some(ifname) => ifname,
+        None => {
+            error!("Unable to get interface name");
+            return false;
+        }
+    };
+
+    let cmp_conn_ifname = match cmp_conn.interface_name() {
+        Some(ifname) => ifname,
+        None => {
+            error!("Unable to get interface name");
+            return false;
+        }
+    };
+
+    // Compare backing ifnames
+    if conn_ifname != cmp_conn_ifname {
+        debug!(
+            "Connection \"{}\" ifname \"{}\" does not match desired ifname \"{}\"",
+            cmp_conn_id_str, cmp_conn_ifname, conn_ifname
+        );
+        return false;
+    }
+
+    true
+}
+
+// Determine if provided connection for comparison `cmp_conn` is a bond connection
+// and matches desired connection `conn`
+//
+// In addition to comparing backing interface name, also compare slave settings
+// (e.g. master name, slave type) if connection is determined to be a slave connection.
+fn matching_wired_connection(conn: &SimpleConnection, cmp_conn: &Connection) -> bool {
+    // Get SettingConnection obj for both connection and compared connection
+    let conn_settings = match conn.setting_connection() {
+        Some(c) => c,
+        None => {
+            error!("Unable to get connection settings");
+            return false;
+        }
+    };
+
+    let cmp_conn_settings = match cmp_conn.setting_connection() {
+        Some(c) => c,
+        None => {
+            error!("Unable to get connection settings");
+            return false;
+        }
+    };
+
+    // Get connection id for compared connection
     let conn_id = match conn_settings.id() {
         Some(c) => c,
         None => {
@@ -535,104 +657,122 @@ fn matching_bond_connection(conn: &Connection, ifname: &str) -> bool {
     };
     let conn_id_str = conn_id.as_str();
 
-    let _conn_settings_bond = match conn.setting_bond() {
-        Some(c) => {
-            debug!("Connection \"{}\" is bond connection", conn_id_str);
-            c
-        }
-        None => {
-            debug!("Connection \"{}\" is not bond connection", conn_id_str);
-            return false;
-        }
-    };
-
-    match conn.interface_name() {
-        Some(found_ifname) => {
-            if found_ifname == ifname {
-                debug!(
-                    "Bond connection \"{}\" with ifname \"{}\" matches",
-                    conn_id_str, found_ifname
-                );
-                true
-            } else {
-                debug!(
-                    "Bond connection \"{}\" with ifname \"{}\" does not match",
-                    conn_id_str, found_ifname
-                );
-                false
-            }
-        }
-        None => {
-            error!("Unable to get interface name");
-            false
-        }
-    }
-}
-
-fn matching_wired_connection(conn: &Connection, ifname: &str) -> bool {
-    let conn_settings = match get_connection_settings(conn) {
-        Ok(conn_settings) => conn_settings,
-        Err(_) => {
-            error!("Unable to get connection settings");
-            return false;
-        }
-    };
-
-    let conn_id = match conn_settings.id() {
+    let cmp_conn_id = match cmp_conn_settings.id() {
         Some(c) => c,
         None => {
             error!("Unable to get connection id");
             return false;
         }
     };
-    let conn_id_str = conn_id.as_str();
+    let cmp_conn_id_str = cmp_conn_id.as_str();
 
-    let _conn_settings_wired = match conn.setting_wired() {
+    // Ensure compared connection is wired (assume connection desired is wired)
+    match cmp_conn.setting_wired() {
         Some(c) => {
-            debug!("Connection \"{}\" is wired", conn_id_str);
+            debug!("Connection \"{}\" is wired", cmp_conn_id_str);
             c
         }
         None => {
-            debug!("Connection \"{}\" is not wired", conn_id_str);
+            debug!("Connection \"{}\" is not wired", cmp_conn_id_str);
             return false;
         }
     };
 
-    match conn.interface_name() {
-        Some(found_ifname) => {
-            if found_ifname == ifname {
-                debug!(
-                    "Wired connection \"{}\" with ifname \"{}\" matches",
-                    conn_id_str, found_ifname
-                );
-                true
-            } else {
-                debug!(
-                    "Wired connection \"{}\" with ifname \"{}\" does not match",
-                    conn_id_str, found_ifname
-                );
-                false
-            }
-        }
+    // Get ifname for both wired connections
+    let conn_ifname = match conn.interface_name() {
+        Some(c) => c,
         None => {
             error!("Unable to get interface name");
-            false
+            return false;
         }
-    }
-}
+    };
 
-fn get_connection_settings(conn: &Connection) -> Result<SettingConnection> {
-    match conn.setting_connection() {
-        Some(c) => Ok(c),
+    let cmp_conn_ifname = match cmp_conn.interface_name() {
+        Some(c) => c,
         None => {
-            error!("Unable to get connection settings");
-            Err(anyhow!("Unable to get connection settings"))
+            error!("Unable to get interface name");
+            return false;
+        }
+    };
+
+    // Compare backing ifnames
+    if conn_ifname != cmp_conn_ifname {
+        debug!(
+            "Connection \"{}\" ifname \"{}\" does not match desired ifname \"{}\"",
+            cmp_conn_id_str, cmp_conn_ifname, conn_ifname
+        );
+        return false;
+    }
+
+    // Compare both's master connections, if either is a slave connection
+    let conn_master = conn_settings.master();
+    let cmp_conn_master = conn_settings.master();
+
+    if conn_master.is_none() && cmp_conn_master.is_some() {
+        debug!(
+            "Connection \"{}\" is not a slave device but compared connection \"{}\" is",
+            conn_id_str, cmp_conn_id_str
+        );
+        return false;
+    } else if conn_master.is_some() && cmp_conn_master.is_none() {
+        debug!(
+            "Connection \"{}\" is a slave device but compared connection \"{}\" is not",
+            conn_id_str, cmp_conn_id_str
+        );
+        return false;
+    }
+
+    if conn_master.is_some() && cmp_conn_master.is_some() {
+        let conn_master = conn_master.unwrap();
+        let cmp_conn_master = cmp_conn_master.unwrap();
+
+        if conn_master != cmp_conn_master {
+            debug!(
+                "Connection \"{}\" and compared connection \"{}\" have different master devices",
+                conn_id_str, cmp_conn_id_str
+            );
+            return false;
         }
     }
+
+    // Determine if either connection is a slave
+    let conn_slave_type = conn_settings.slave_type();
+    let cmp_conn_slave_type = cmp_conn_settings.slave_type();
+
+    if conn_slave_type.is_none() && cmp_conn_slave_type.is_some() {
+        debug!(
+            "Connection \"{}\" is not a slave but compared connection \"{}\" is",
+            conn_id_str, cmp_conn_id_str
+        );
+        return false;
+    } else if conn_slave_type.is_some() && cmp_conn_slave_type.is_none() {
+        debug!(
+            "Connection \"{}\" is a slave but compared connection \"{}\" is not",
+            conn_id_str, cmp_conn_id_str
+        );
+        return false;
+    }
+
+    // Both connections are slaves, compare slave type
+    if conn_slave_type.is_some() && cmp_conn_slave_type.is_some() {
+        let conn_slave_type = conn_slave_type.unwrap();
+        let cmp_conn_slave_type = cmp_conn_slave_type.unwrap();
+
+        if conn_slave_type != cmp_conn_slave_type {
+            debug!(
+                "Connection \"{}\" has different slave type than compared connection \"{}\"",
+                conn_id_str, cmp_conn_id_str
+            );
+            return false;
+        }
+    }
+
+    true
 }
 
 fn get_bond_mode_str(mode: BondMode) -> &'static str {
     match mode {
+        BondMode::Unset => "NOT SET",
         BondMode::RoundRobin => todo!(),
         BondMode::ActiveBackup => "active-backup",
         BondMode::XOR => todo!(),
