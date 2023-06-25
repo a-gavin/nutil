@@ -131,10 +131,7 @@ async fn run(opts: App) -> Result<()> {
     match opts.command {
         Command::Create { c_type, c_args } => create_connection(&client, c_type, c_args).await,
         Command::Delete { c_type, c_args } => delete_connection(&client, c_type, c_args).await,
-        Command::Status {
-            c_type: _,
-            c_args: _,
-        } => todo!(),
+        Command::Status { c_type, c_args } => connection_status(&client, c_type, c_args),
     }
 }
 
@@ -156,6 +153,17 @@ async fn delete_connection(
 ) -> Result<()> {
     match c_type {
         ConnectionType::Bond => delete_bond(&client, c_opts).await,
+        ConnectionType::AccessPoint => todo!(),
+    }
+}
+
+fn connection_status(
+    client: &Client,
+    c_type: ConnectionType,
+    c_opts: ConnectionOpts,
+) -> Result<()> {
+    match c_type {
+        ConnectionType::Bond => connection_status_bond(&client, c_opts),
         ConnectionType::AccessPoint => todo!(),
     }
 }
@@ -333,6 +341,111 @@ async fn delete_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
     };
 
     // TODO: Up any previously-existing interfaces?
+
+    Ok(())
+}
+
+fn connection_status_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
+    let opts = BondOpts::try_from(c_opts)?;
+
+    // Create bond struct here so we can comprehensively search
+    // for any matching existing connection, should it exist
+    // Does not add connection to Network Manager, that happens later
+    let bond_conn = create_bond_connection(&opts.bond_ifname, opts.bond_mode)?;
+
+    // Only possibly active, so keep option until we try to gather active conn info later
+    let mut is_active = false;
+    let mut ip4_addr_strs: Vec<String> = vec![];
+    match get_active_connection(&client, DeviceType::Bond, &bond_conn) {
+        Some(c) => {
+            is_active = true; // TODO: Change to state instead of simple active
+
+            // Gather active IPv4 info
+            let cfg = match c.ip4_config() {
+                Some(cfg) => cfg,
+                None => {
+                    error!("");
+                    return Err(anyhow!("")); // TODO
+                }
+            };
+
+            for ip4_addr in cfg.addresses() {
+                let addr = ip4_addr.address().unwrap(); // TODO
+                let addr_str = addr.as_str();
+                ip4_addr_strs.push(format!("{}\t(active)", addr_str));
+            }
+        }
+        None => (),
+    };
+
+    // Try to get connection that matches what we want from NetworkManager
+    // If it doesn't exist, no sense continuing
+    let bond_remote_conn = match get_connection(&client, DeviceType::Bond, &bond_conn) {
+        Some(c) => c,
+        None => {
+            error!("Bond connection \"{}\" does not exist", &opts.bond_ifname);
+            return Err(anyhow!(
+                "Bond connection \"{}\" does not exist",
+                &opts.bond_ifname
+            ));
+        }
+    };
+    let bond_conn = bond_remote_conn.upcast::<Connection>();
+
+    // Gather bond static info
+    let bond_ip4_settings = match bond_conn.setting_ip4_config() {
+        Some(c) => c,
+        None => {
+            error!("Unable to get connection ip4 settings");
+            return Err(anyhow!("Unable to get connection ip4 settings"));
+        }
+    };
+
+    let ip4_method_gstr = match bond_ip4_settings.method() {
+        Some(m) => m,
+        None => return Err(anyhow!("")), // TODO
+    };
+    let ip4_method = ip4_method_gstr.as_str();
+
+    // Static IPv4 addresses
+    for ix in 0..bond_ip4_settings.num_addresses() {
+        match bond_ip4_settings.address(ix as i32) {
+            // Why does this take a signed int lmao
+            Some(c) => match c.address() {
+                Some(addr) => {
+                    ip4_addr_strs.push(format!("{}\t(static)", addr));
+                }
+                None => warn!("Unable to get address string with index \"{}\"", ix),
+            },
+            None => warn!("Unable to get address with index \"{}\"", ix),
+        }
+    }
+
+    // Active IPv4 addresses (i.e. non-NetworkManager configured)
+    // Begin printing status info
+    println!("Name:\t\t{}", &opts.bond_ifname);
+    println!("Active:\t\t{}", is_active);
+
+    // Backing connections/devices
+    // TODO: Search and print devices/connections which have this bond as their parent
+
+    // IPv4 status info
+    println!("IPv4:");
+    println!("  Method:\t{}", ip4_method);
+
+    print!("  Addresses:");
+    if ip4_addr_strs.len() == 0 {
+        // Print first addr on same line, but if no addrs, need newline
+        println!();
+    }
+    for (ix, addr) in ip4_addr_strs.iter().enumerate() {
+        if ix == 0 {
+            // Print first IP addr on same line as "Addresses"
+            println!("\t{}", addr);
+            continue;
+        }
+        println!("\t\t{}", addr);
+    }
 
     Ok(())
 }
