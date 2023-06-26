@@ -353,26 +353,28 @@ fn connection_status_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()>
     // Does not add connection to Network Manager, that happens later
     let bond_conn = create_bond_connection(&opts.bond_ifname, opts.bond_mode)?;
 
-    // Only possibly active, so keep option until we try to gather active conn info later
-    let mut is_active = false;
+    // Only possibly active, so assume deactivated until proven otherwise
+    let mut conn_state: ActiveConnectionState = ActiveConnectionState::Deactivated;
     let mut ip4_addr_strs: Vec<String> = vec![];
     match get_active_connection(&client, DeviceType::Bond, &bond_conn) {
         Some(c) => {
-            is_active = true; // TODO: Change to state instead of simple active
+            conn_state = c.state();
 
             // Gather active IPv4 info
-            let cfg = match c.ip4_config() {
-                Some(cfg) => cfg,
-                None => {
-                    error!("");
-                    return Err(anyhow!("")); // TODO
+            if let Some(cfg) = c.ip4_config() {
+                for ip4_addr in cfg.addresses() {
+                    let addr = ip4_addr.address().unwrap(); // TODO
+                    let addr_str = addr.as_str();
+                    ip4_addr_strs.push(format!("{}\t(active)", addr_str));
                 }
-            };
-
-            for ip4_addr in cfg.addresses() {
-                let addr = ip4_addr.address().unwrap(); // TODO
-                let addr_str = addr.as_str();
-                ip4_addr_strs.push(format!("{}\t(active)", addr_str));
+            } else {
+                // Expected when bond is waiting to get IP information.
+                // Possible when backing devices are used for other
+                // non-bond child connections but bond connection is active
+                warn!(
+                    "Unable to get IPv4 config for active bond connection \"{}\"",
+                    opts.bond_ifname
+                )
             }
         }
         None => (),
@@ -424,7 +426,7 @@ fn connection_status_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()>
     // Active IPv4 addresses (i.e. non-NetworkManager configured)
     // Begin printing status info
     println!("Name:\t\t{}", &opts.bond_ifname);
-    println!("Active:\t\t{}", is_active);
+    println!("Active:\t\t{}", get_connection_state_str(conn_state));
 
     // Backing connections/devices
     // TODO: Search and print devices/connections which have this bond as their parent
@@ -893,5 +895,16 @@ fn get_bond_mode_str(mode: BondMode) -> &'static str {
         BondMode::DynamicLinkAggregation => todo!(),
         BondMode::TransmitLoadBalancing => todo!(),
         BondMode::AdaptiveLoadBalancing => todo!(),
+    }
+}
+
+fn get_connection_state_str(state: ActiveConnectionState) -> &'static str {
+    match state {
+        ActiveConnectionState::Activated => "activated",
+        ActiveConnectionState::Activating => "activating",
+        ActiveConnectionState::Deactivated => "deactivated",
+        ActiveConnectionState::Deactivating => "deactivating",
+        ActiveConnectionState::Unknown => "unknown",
+        _ => panic!("Unexpected connection state \"{}\"", state),
     }
 }
