@@ -362,6 +362,7 @@ fn connection_status_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()>
 
             // Gather active IPv4 info
             if let Some(cfg) = c.ip4_config() {
+                // Active IPv4 addresses (i.e. non-NetworkManager configured)
                 for ip4_addr in cfg.addresses() {
                     let addr = ip4_addr.address().unwrap(); // TODO
                     let addr_str = addr.as_str();
@@ -423,13 +424,43 @@ fn connection_status_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()>
         }
     }
 
-    // Active IPv4 addresses (i.e. non-NetworkManager configured)
+    let child_conns = get_child_connections(&client, &opts.bond_ifname, DeviceType::Ethernet);
+
     // Begin printing status info
     println!("Name:\t\t{}", &opts.bond_ifname);
     println!("Active:\t\t{}", get_connection_state_str(conn_state));
 
     // Backing connections/devices
-    // TODO: Search and print devices/connections which have this bond as their parent
+    print!("Slave devices:");
+    if let Some(child_conns) = child_conns {
+        if child_conns.len() == 0 {
+            // Print first addr on same line, but if no addrs, need newline
+            println!();
+        }
+
+        let mut slave_ifnames: Vec<String> = vec![];
+        for conn in child_conns {
+            match conn.setting_connection() {
+                Some(setting) => {
+                    if let Some(slave_ifname) = setting.interface_name() {
+                        slave_ifnames.push(format!("{}", slave_ifname.as_str()));
+                    }
+                }
+                None => {
+                    // TODO: Log err
+                }
+            }
+        }
+
+        for (ix, ifname) in slave_ifnames.iter().enumerate() {
+            if ix == 0 {
+                // Print first ifname on same line as "Slave devices"
+                println!("\t{}", ifname);
+                continue;
+            }
+            println!("\t\t{}", ifname);
+        }
+    }
 
     // IPv4 status info
     println!("IPv4:");
@@ -671,6 +702,79 @@ fn get_active_connection(
     }
 
     matching_conn
+}
+
+fn get_child_connections(
+    client: &Client,
+    master_ifname: &str,
+    child_device_type: DeviceType,
+) -> Option<Vec<RemoteConnection>> {
+    debug!(
+        "Searching for child connection with parent ifname \"{}\"",
+        master_ifname
+    );
+
+    // Only Ethernet DeviceType supported
+    if child_device_type != DeviceType::Ethernet {
+        error!(
+            "Unsupported device type \"{}\" for get_connection()",
+            child_device_type
+        );
+        return None;
+    }
+
+    let mut child_conns: Vec<RemoteConnection> = vec![];
+
+    // Iterate through connections attempting to match connection's master ifname with provided
+    for conn in client.connections().into_iter() {
+        let conn = conn.upcast::<Connection>();
+
+        let conn_settings = match conn.setting_connection() {
+            Some(c) => c,
+            None => {
+                error!("Unable to get connection settings");
+                continue;
+            }
+        };
+
+        let conn_id = match conn_settings.id() {
+            Some(c) => c,
+            None => {
+                error!("Unable to get connection id");
+                return None;
+            }
+        };
+        let conn_id_str = conn_id.as_str();
+
+        if conn.setting_wired().is_none() {
+            debug!("Skipping non-wired connection \"{}\"", conn_id_str);
+            continue;
+        }
+
+        match conn_settings.master() {
+            Some(conn_master) => {
+                if conn_master != master_ifname {
+                    debug!(
+                        "Master interface \"{}\" for connection \"{}\" does not match desired master interface \"{}\"",
+                        conn_master, conn_id_str, master_ifname
+                    );
+                } else {
+                    debug!(
+                        "Master interface \"{}\" for connection \"{}\" matches desired master interface \"{}\"",
+                        conn_master, conn_id_str, master_ifname
+                    );
+                    child_conns.push(conn.downcast::<RemoteConnection>().unwrap());
+                    // TODO: Revisit this. Should always be okay?
+                }
+            }
+            None => {
+                debug!("Skipping connection without master \"{}\"", conn_id_str);
+                continue;
+            }
+        }
+    }
+
+    Some(child_conns)
 }
 
 // Determine if provided connection for comparison `cmp_conn` is a bond connection
