@@ -88,6 +88,10 @@ impl TryFrom<ConnectionOpts> for BondOpts {
             None => return Err(anyhow!("Bond mode not specified")),
         };
 
+        if opts.slave_ifnames.iter().map(|name: &String| name == "ANY").any(|x| x) {
+            return Err(anyhow!("Slave interface name \"ANY\" is reserved"));
+        }
+
         Ok(BondOpts {
             bond_ifname,
             bond_mode,
@@ -203,12 +207,9 @@ async fn create_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
             ),
         };
 
-        // If detect an active slave connection with desired slave interface fail
-        // TODO: Reimpl connection comparison to support skipping ethernet masters (option to just check if both have one)
-        //       Bug here where if already have bond0 w/ slave ifname wired0 and try to create bond1 w/ slave
-        //       ifname wired0, program will continue when we want it to stop due to other bond already using slave
+        // If detect an active slave connection with desired slave interface then error and exit
         let existing_wired_conn_slave =
-            create_wired_connection(slave_ifname, Some(&opts.bond_ifname))?;
+            create_wired_connection(slave_ifname, Some("ANY"))?;
         match get_active_connection(&client, DeviceType::Ethernet, &existing_wired_conn_slave) {
             Some(_) => {
                 return Err(anyhow!(
@@ -495,6 +496,8 @@ fn create_bond_connection(bond_ifname: &str, bond_mode: BondMode) -> Result<Simp
 
 // Create a wired SimpleConnection for use in activating, deactivating, finding, etc
 // If bond_ifname is Some, create the wired connection as a bond slave with bond_ifname as master.
+// If bond_ifname is Some and "ANY", this connection will match to any other slave wired connection
+// when searching for wired connections, assuming all other fields match.
 //
 // NOTE: SimpleConnection are owned by this program. ActiveConnection and RemoteConnection
 //       are owned by the NetworkManager library
@@ -929,12 +932,24 @@ fn matching_wired_connection(conn: &SimpleConnection, cmp_conn: &Connection) -> 
         let conn_master = conn_master.unwrap();
         let cmp_conn_master = cmp_conn_master.unwrap();
 
-        if conn_master != cmp_conn_master {
+        // ANY master is reserved to indicate we're searching for
+        // any wired connection with all matching properties save
+        // the master device.
+        // 
+        // In other words, we're looking for any wired connection we want to mess with
+        // that's already being used for something else.
+        if conn_master != cmp_conn_master && conn_master != "ANY" {
             debug!(
                 "Connection \"{}\" and compared connection \"{}\" have different master devices",
                 conn_id_str, cmp_conn_id_str
             );
             return false;
+        } else if conn_master == "ANY" {
+            debug!(
+                "Connection \"{}\" and compared connection \"{}\" have different master devices, but match otherwise",
+                conn_id_str, cmp_conn_id_str
+            );
+            return true;
         }
     }
 
