@@ -3,7 +3,7 @@ use nm::*;
 
 use clap::{ArgEnum, Args, Parser, Subcommand};
 
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[derive(Parser, Debug)]
@@ -168,6 +168,7 @@ fn connection_status(
     }
 }
 
+#[instrument(skip(client), err)]
 async fn create_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
     let opts = BondOpts::try_from(c_opts)?;
 
@@ -180,7 +181,6 @@ async fn create_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
     // If bond connection using same devices does not exist, good to continue
     // TODO: What if using only one of backing Wired interfaces????
     if get_connection(&client, DeviceType::Bond, &bond_conn).is_some() {
-        warn!("Bond connection already exists, quitting...");
         return Err(anyhow!("Bond connection already exists, quitting..."));
     }
 
@@ -217,10 +217,6 @@ async fn create_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
     let wired_dev1 = match client.device_by_iface(&opts.wired_ifname1) {
         Some(device) => device,
         None => {
-            warn!(
-                "Required wired device \"{}\" does not exist, quitting...",
-                &opts.wired_ifname1
-            );
             return Err(anyhow!(
                 "Wired device \"{}\" does not exist, quitting...",
                 &opts.wired_ifname1
@@ -231,10 +227,6 @@ async fn create_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
     let wired_dev2 = match client.device_by_iface(&opts.wired_ifname2) {
         Some(device) => device,
         None => {
-            warn!(
-                "Wired device \"{}\" does not exist, quitting...",
-                &opts.wired_ifname2
-            );
             return Err(anyhow!(
                 "Wired device \"{}\" does not exist, quitting...",
                 &opts.wired_ifname2
@@ -277,12 +269,23 @@ async fn create_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
     Ok(())
 }
 
+#[instrument(skip(client), err)]
 async fn delete_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
     let opts = BondOpts::try_from(c_opts)?;
 
     let bond_conn = create_bond_connection(&opts.bond_ifname, opts.bond_mode)?;
     let wired_conn1 = create_wired_connection(&opts.wired_ifname1, Some(&opts.bond_ifname))?;
     let wired_conn2 = create_wired_connection(&opts.wired_ifname2, Some(&opts.bond_ifname))?;
+
+    let bond_remote_conn = match get_connection(&client, DeviceType::Bond, &bond_conn) {
+        Some(c) => c,
+        None => {
+            return Err(anyhow!(
+                "Required bond connection \"{}\" does not exist, quitting...",
+                &opts.bond_ifname
+            ));
+        }
+    };
 
     // Deactivate bond connection
     // Automatically deactivates slave connections on success
@@ -293,10 +296,10 @@ async fn delete_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
             info!("Bond connection and associated interfaces deactivated");
         }
         None => {
-            return Err(anyhow!(
-                "Required bond connection \"{}\" does not exist, quitting...",
+            info!(
+                "Required bond connection \"{}\" is not active",
                 &opts.bond_ifname
-            ));
+            );
         }
     };
 
@@ -305,18 +308,8 @@ async fn delete_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
         "Deleting bond connection with interface \"{}\"",
         opts.bond_ifname
     );
-    match get_connection(&client, DeviceType::Bond, &bond_conn) {
-        Some(c) => {
-            c.delete_future().await?;
-            info!("Bond connection deleted");
-        }
-        None => {
-            return Err(anyhow!(
-                "Required bond connection \"{}\" does not exist, quitting...",
-                &opts.bond_ifname
-            ));
-        }
-    };
+    bond_remote_conn.delete_future().await?;
+    info!("Bond connection deleted");
 
     // Delete first wired slave connection
     match get_connection(&client, DeviceType::Ethernet, &wired_conn1) {
@@ -340,11 +333,10 @@ async fn delete_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
         }
     };
 
-    // TODO: Up any previously-existing interfaces?
-
     Ok(())
 }
 
+#[instrument(skip(client), err)]
 fn connection_status_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
     let opts = BondOpts::try_from(c_opts)?;
 
@@ -386,7 +378,6 @@ fn connection_status_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()>
     let bond_remote_conn = match get_connection(&client, DeviceType::Bond, &bond_conn) {
         Some(c) => c,
         None => {
-            error!("Bond connection \"{}\" does not exist", &opts.bond_ifname);
             return Err(anyhow!(
                 "Bond connection \"{}\" does not exist",
                 &opts.bond_ifname
@@ -399,14 +390,13 @@ fn connection_status_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()>
     let bond_ip4_settings = match bond_conn.setting_ip4_config() {
         Some(c) => c,
         None => {
-            error!("Unable to get connection ip4 settings");
             return Err(anyhow!("Unable to get connection ip4 settings"));
         }
     };
 
     let ip4_method_gstr = match bond_ip4_settings.method() {
         Some(m) => m,
-        None => return Err(anyhow!("")), // TODO
+        None => return Err(anyhow!("Unable to get ip4 configuration method")),
     };
     let ip4_method = ip4_method_gstr.as_str();
 
@@ -439,16 +429,14 @@ fn connection_status_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()>
         }
 
         let mut slave_ifnames: Vec<String> = vec![];
-        for conn in child_conns {
+        for (ix, conn) in child_conns.iter().enumerate() {
             match conn.setting_connection() {
                 Some(setting) => {
                     if let Some(slave_ifname) = setting.interface_name() {
                         slave_ifnames.push(format!("{}", slave_ifname.as_str()));
                     }
                 }
-                None => {
-                    // TODO: Log err
-                }
+                None => warn!("Unable to get address string with index \"{}\"", ix),
             }
         }
 
@@ -597,7 +585,7 @@ fn get_connection(
         if found_matching && matching_conn.is_none() {
             // Found matching for first time. Save matching and continue
             // to log any other connections with the same interface name
-            info!(
+            debug!(
                 "Found connection with matching interface name \"{}\"",
                 ifname
             );
