@@ -1,64 +1,67 @@
 use anyhow::{anyhow, Context, Result};
 use nm::*;
 
-use clap::{ArgEnum, Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use tracing::{debug, error, info, instrument, warn};
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[derive(Parser, Debug)]
+#[command(name = "nutil")]
+#[command(author = "A. Gavin <a_gavin@icloud.com>")]
+#[command(about = "Utility for creating and managing bond devices using libnm", long_about = None)]
 pub struct App {
     #[clap(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand, Debug)]
-// TODO Comment behavior of commands
 enum Command {
-    Create {
-        #[clap(arg_enum)]
-        c_type: ConnectionType,
+    /// UNIMPLEMENTED
+    // Configure NetworkManager-managed access point (wireless) connections
+    AccessPoint {
+        #[clap(value_enum)]
+        action: Action,
 
         #[clap(flatten)]
-        c_args: ConnectionOpts,
+        c_args: BondArgs,
     },
-    Delete {
-        #[clap(arg_enum)]
-        c_type: ConnectionType,
+    /// Configure NetworkManager-managed bond connections
+    Bond {
+        #[clap(value_enum)]
+        action: Action,
 
         #[clap(flatten)]
-        c_args: ConnectionOpts,
-    },
-    Status {
-        #[clap(arg_enum)]
-        c_type: ConnectionType,
-
-        #[clap(flatten)]
-        c_args: ConnectionOpts,
+        c_args: BondArgs,
     },
 }
 
-#[derive(ArgEnum, Clone, Debug)]
-enum ConnectionType {
-    Bond,
-    AccessPoint,
+#[derive(ValueEnum, Clone, Debug)]
+enum Action {
+    Create,
+    Delete,
+    Status,
 }
 
 #[derive(Args, Debug)]
-struct ConnectionOpts {
-    // General options
+struct AccessPointArgs {
+    ifname: Option<String>,
+    // TODO: Other AP options
+}
+
+#[derive(Args, Debug)]
+struct BondArgs {
+    /// Bond connection and backing device name (must match)
     ifname: Option<String>,
 
-    #[clap(arg_enum)]
-    bond_mode: Option<BondMode>, // TODO: Default to active-backup
+    #[clap(value_enum)]
+    bond_mode: Option<BondMode>,
 
-    // Bond-specific options
+    /// Bond backing wired device interface names (required for creation and deletion)
     slave_ifnames: Vec<String>,
 }
 
-#[derive(ArgEnum, Clone, Debug)]
+#[derive(ValueEnum, Clone, Debug)]
 enum BondMode {
-    Unset = -1,
     RoundRobin = 0,
     ActiveBackup = 1,
     XOR = 2,
@@ -74,40 +77,43 @@ struct BondOpts {
     slave_ifnames: Vec<String>,
 }
 
-impl TryFrom<ConnectionOpts> for BondOpts {
+impl TryFrom<BondArgs> for BondOpts {
     type Error = anyhow::Error;
 
-    fn try_from(opts: ConnectionOpts) -> Result<Self, Self::Error> {
-        let bond_ifname = match opts.ifname {
+    fn try_from(args: BondArgs) -> Result<Self, Self::Error> {
+        let bond_ifname = match args.ifname {
             Some(ifname) => ifname,
             None => return Err(anyhow!("Bond interface name not specified")),
         };
 
-        let bond_mode = match opts.bond_mode {
+        let bond_mode = match args.bond_mode {
             Some(mode) => mode,
-            None => return Err(anyhow!("Bond mode not specified")),
+            None => {
+                info!("Bond mode not specified, defaulting to \"active-backup\"");
+                BondMode::ActiveBackup
+            }
         };
 
-        if opts.slave_ifnames.iter().map(|name: &String| name == "ANY").any(|x| x) {
+        if args
+            .slave_ifnames
+            .iter()
+            .map(|name: &String| name == "ANY")
+            .any(|x| x)
+        {
             return Err(anyhow!("Slave interface name \"ANY\" is reserved"));
         }
 
         Ok(BondOpts {
             bond_ifname,
             bond_mode,
-            slave_ifnames: opts.slave_ifnames,
+            slave_ifnames: args.slave_ifnames,
         })
     }
 }
 
 fn main() -> Result<()> {
-    // Default to printing logs at info level for all spans if not specified
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(env_filter)
-        .init();
+    // Defaults to printing logs at info level for all spans if not specified
+    tracing_subscriber::fmt().pretty().init();
 
     let opts = App::parse();
 
@@ -115,54 +121,27 @@ fn main() -> Result<()> {
     context.block_on(run(opts))
 }
 
-async fn run(opts: App) -> Result<()> {
+async fn run(args: App) -> Result<()> {
     let client = Client::new_future()
         .await
         .context("Failed to create NM Client")?;
 
-    match opts.command {
-        Command::Create { c_type, c_args } => create_connection(&client, c_type, c_args).await,
-        Command::Delete { c_type, c_args } => delete_connection(&client, c_type, c_args).await,
-        Command::Status { c_type, c_args } => connection_status(&client, c_type, c_args),
-    }
-}
-
-async fn create_connection(
-    client: &Client,
-    c_type: ConnectionType,
-    c_opts: ConnectionOpts,
-) -> Result<()> {
-    match c_type {
-        ConnectionType::Bond => create_bond(&client, c_opts).await,
-        ConnectionType::AccessPoint => todo!(),
-    }
-}
-
-async fn delete_connection(
-    client: &Client,
-    c_type: ConnectionType,
-    c_opts: ConnectionOpts,
-) -> Result<()> {
-    match c_type {
-        ConnectionType::Bond => delete_bond(&client, c_opts).await,
-        ConnectionType::AccessPoint => todo!(),
-    }
-}
-
-fn connection_status(
-    client: &Client,
-    c_type: ConnectionType,
-    c_opts: ConnectionOpts,
-) -> Result<()> {
-    match c_type {
-        ConnectionType::Bond => connection_status_bond(&client, c_opts),
-        ConnectionType::AccessPoint => todo!(),
+    match args.command {
+        Command::AccessPoint {
+            action: _,
+            c_args: _,
+        } => todo!(),
+        Command::Bond { action, c_args } => match action {
+            Action::Create => create_bond(&client, c_args).await,
+            Action::Delete => delete_bond(&client, c_args).await,
+            Action::Status => bond_status(&client, c_args),
+        },
     }
 }
 
 #[instrument(skip(client), err)]
-async fn create_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
-    let opts = BondOpts::try_from(c_opts)?;
+async fn create_bond(client: &Client, c_args: BondArgs) -> Result<()> {
+    let opts = BondOpts::try_from(c_args)?;
 
     if opts.slave_ifnames.len() == 0 {
         return Err(anyhow!(
@@ -208,8 +187,7 @@ async fn create_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
         };
 
         // If detect an active slave connection with desired slave interface then error and exit
-        let existing_wired_conn_slave =
-            create_wired_connection(slave_ifname, Some("ANY"))?;
+        let existing_wired_conn_slave = create_wired_connection(slave_ifname, Some("ANY"))?;
         match get_active_connection(&client, DeviceType::Ethernet, &existing_wired_conn_slave) {
             Some(_) => {
                 return Err(anyhow!(
@@ -269,8 +247,8 @@ async fn create_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
 }
 
 #[instrument(skip(client), err)]
-async fn delete_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
-    let opts = BondOpts::try_from(c_opts)?;
+async fn delete_bond(client: &Client, c_args: BondArgs) -> Result<()> {
+    let opts = BondOpts::try_from(c_args)?;
 
     // Create matching bond SimpleConnection for comparison
     let bond_conn = create_bond_connection(&opts.bond_ifname, opts.bond_mode)?;
@@ -329,8 +307,8 @@ async fn delete_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
 }
 
 #[instrument(skip(client), err)]
-fn connection_status_bond(client: &Client, c_opts: ConnectionOpts) -> Result<()> {
-    let opts = BondOpts::try_from(c_opts)?;
+fn bond_status(client: &Client, c_args: BondArgs) -> Result<()> {
+    let opts = BondOpts::try_from(c_args)?;
 
     // Create bond struct here so we can comprehensively search
     // for any matching existing connection, should it exist
@@ -748,8 +726,9 @@ fn get_slave_connections(
                         "Master interface \"{}\" for connection \"{}\" matches desired master interface \"{}\"",
                         conn_master, conn_id_str, master_ifname
                     );
+
+                    // Expect unwrap to succeed as we just upcasted from a RemoteConnection earlier
                     slave_conns.push(conn.downcast::<RemoteConnection>().unwrap());
-                    // TODO: Revisit this. Should always be okay?
                 }
             }
             None => {
@@ -935,7 +914,7 @@ fn matching_wired_connection(conn: &SimpleConnection, cmp_conn: &Connection) -> 
         // ANY master is reserved to indicate we're searching for
         // any wired connection with all matching properties save
         // the master device.
-        // 
+        //
         // In other words, we're looking for any wired connection we want to mess with
         // that's already being used for something else.
         if conn_master != cmp_conn_master && conn_master != "ANY" {
@@ -995,7 +974,6 @@ fn matching_wired_connection(conn: &SimpleConnection, cmp_conn: &Connection) -> 
 
 fn get_bond_mode_str(mode: BondMode) -> &'static str {
     match mode {
-        BondMode::Unset => "NOT SET",
         BondMode::RoundRobin => todo!(),
         BondMode::ActiveBackup => "active-backup",
         BondMode::XOR => todo!(),

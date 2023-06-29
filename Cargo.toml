@@ -1,5 +1,5 @@
 [package]
-name = "libnm_rs_hackin"
+name = "nutil"
 version = "0.1.0"
 edition = "2021"
 
@@ -12,8 +12,7 @@ glib = { git = "https://github.com/gtk-rs/gtk-rs-core" }
 nm = { git = "https://github.com/balena-io-modules/libnm-rs.git" }
 
 # Arg parsing
-clap = { version = "3", features = ["derive"] }
-strum = { version = "0.25", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
 
 # Logging
 tracing = "0.1"
