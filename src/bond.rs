@@ -1,14 +1,18 @@
+use std::fs::File;
+
 use anyhow::{anyhow, Result};
 use clap::ValueEnum;
 use nm::*;
+use serde::Deserialize;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::cli::BondArgs;
 use crate::connection::*;
 
-#[derive(ValueEnum, Clone, Debug)]
+#[derive(Default, ValueEnum, Deserialize, PartialEq, Clone, Debug)]
 pub enum BondMode {
     RoundRobin = 0,
+    #[default]
     ActiveBackup = 1,
     XOR = 2,
     Broadcast = 3,
@@ -17,10 +21,28 @@ pub enum BondMode {
     AdaptiveLoadBalancing = 6,
 }
 
-struct BondOpts {
+#[derive(Default, Deserialize, PartialEq, Clone, Debug)]
+pub struct BondOpts {
+    #[serde(rename = "bond_interface")]
     bond_ifname: String,
+
+    #[serde(default)]
     bond_mode: BondMode,
+
+    #[serde(default, rename = "slave_interfaces")]
     slave_ifnames: Vec<String>,
+}
+
+#[instrument(err)]
+pub fn parse_bond_opts(config: Option<String>, args: BondArgs) -> Result<BondOpts> {
+    match config {
+        Some(cfg) => {
+            let cfg_file = File::open(cfg)?;
+            let opts: BondOpts = serde_yaml::from_reader(cfg_file)?;
+            Ok(opts)
+        }
+        None => BondOpts::try_from(args),
+    }
 }
 
 impl TryFrom<BondArgs> for BondOpts {
@@ -35,7 +57,7 @@ impl TryFrom<BondArgs> for BondOpts {
         let bond_mode = match args.bond_mode {
             Some(mode) => mode,
             None => {
-                info!("Bond mode not specified, defaulting to \"active-backup\"");
+                info!("Bond mode not specified, defaulting to \"ActiveBackup\"");
                 BondMode::ActiveBackup
             }
         };
@@ -58,9 +80,7 @@ impl TryFrom<BondArgs> for BondOpts {
 }
 
 #[instrument(skip(client), err)]
-pub async fn create_bond(client: &Client, c_args: BondArgs) -> Result<()> {
-    let opts = BondOpts::try_from(c_args)?;
-
+pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
     if opts.slave_ifnames.len() == 0 {
         return Err(anyhow!(
             "One or more slave interfaces required to create a bond connection"
@@ -165,9 +185,7 @@ pub async fn create_bond(client: &Client, c_args: BondArgs) -> Result<()> {
 }
 
 #[instrument(skip(client), err)]
-pub async fn delete_bond(client: &Client, c_args: BondArgs) -> Result<()> {
-    let opts = BondOpts::try_from(c_args)?;
-
+pub async fn delete_bond(client: &Client, opts: BondOpts) -> Result<()> {
     // Create matching bond SimpleConnection for comparison
     let bond_conn = create_bond_connection(&opts.bond_ifname, opts.bond_mode)?;
 
@@ -225,9 +243,7 @@ pub async fn delete_bond(client: &Client, c_args: BondArgs) -> Result<()> {
 }
 
 #[instrument(skip(client), err)]
-pub fn bond_status(client: &Client, c_args: BondArgs) -> Result<()> {
-    let opts = BondOpts::try_from(c_args)?;
-
+pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
     // Create bond struct here so we can comprehensively search
     // for any matching existing connection, should it exist
     // Does not add connection to Network Manager, that happens later

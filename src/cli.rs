@@ -9,6 +9,9 @@ use crate::bond::BondMode;
 pub struct App {
     #[clap(subcommand)]
     pub command: Command,
+
+    #[arg(short, long)]
+    pub config: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -20,10 +23,20 @@ pub enum Command {
         action: Action,
 
         #[clap(flatten)]
-        c_args: BondArgs,
+        c_args: AccessPointArgs,
     },
     /// Configure NetworkManager-managed bond connections
     Bond {
+        // TODO: Make bond_mode optional for CLI too (only optional in config atm)
+        /// Bond creation requires a bond interface name and one or more
+        /// backing wired slave interface names. Bond mode defaults to
+        /// ActiveBackup when unspecified (only optional in config).
+        ///
+        /// Bond status requires only a bond interface name.
+        ///
+        /// Bond deletion requires a bond interface name and an optional
+        /// bond mode. Will delete a bond with a differing bond mode.
+        /// If specified, optional backing slave interfaces will be deleted
         #[clap(value_enum)]
         action: Action,
 
@@ -50,6 +63,7 @@ pub struct BondArgs {
     /// Bond connection and backing device name (must match)
     pub ifname: Option<String>,
 
+    /// Bond mode of operation (defaults to ActiveBackup)
     #[clap(value_enum)]
     pub bond_mode: Option<BondMode>,
 

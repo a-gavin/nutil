@@ -11,8 +11,10 @@ anyhow = "1.0"
 glib = { git = "https://github.com/gtk-rs/gtk-rs-core" }
 nm = { git = "https://github.com/balena-io-modules/libnm-rs.git" }
 
-# Arg parsing
+# Arg and config parsing
 clap = { version = "4", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
 
 # Logging
 tracing = "0.1"

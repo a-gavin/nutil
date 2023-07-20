@@ -29,10 +29,14 @@ async fn run(args: App) -> Result<()> {
             action: _,
             c_args: _,
         } => todo!(),
-        Command::Bond { action, c_args } => match action {
-            Action::Create => create_bond(&client, c_args).await,
-            Action::Delete => delete_bond(&client, c_args).await,
-            Action::Status => bond_status(&client, c_args),
-        },
+        Command::Bond { action, c_args } => {
+            let opts = parse_bond_opts(args.config, c_args)?;
+
+            match action {
+                Action::Create => create_bond(&client, opts).await,
+                Action::Delete => delete_bond(&client, opts).await,
+                Action::Status => bond_status(&client, opts),
+            }
+        }
     }
 }
