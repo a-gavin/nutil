@@ -54,13 +54,19 @@ pub enum Action {
 
 #[derive(Args, Debug)]
 pub struct AccessPointArgs {
-    pub ifname: Option<String>,
-    // TODO: Other AP options
+    pub ssid: Option<String>,
+
+    pub wireless_ifname: Option<String>,
+
+    pub ip4_addr: Option<String>,
+
+    pub password: Option<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct BondArgs {
     /// Bond connection and backing device name (must match)
+    #[clap(name = "bond_interface")]
     pub ifname: Option<String>,
 
     /// Bond mode of operation (defaults to ActiveBackup)
@@ -68,5 +74,15 @@ pub struct BondArgs {
     pub bond_mode: Option<BondMode>,
 
     /// Bond backing wired device interface names (required for creation and deletion)
+    #[clap(name = "slave_interfaces")]
     pub slave_ifnames: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct StationArgs {
+    pub wireless_ifname: Option<String>,
+
+    pub ssid: Option<String>,
+
+    pub password: Option<String>,
 }

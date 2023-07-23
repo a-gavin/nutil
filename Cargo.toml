@@ -9,6 +9,7 @@ anyhow = "1.0"
 
 # Network Manager
 glib = { git = "https://github.com/gtk-rs/gtk-rs-core" }
+libc = '0.2'
 nm = { git = "https://github.com/balena-io-modules/libnm-rs.git" }
 
 # Arg and config parsing
@@ -19,3 +20,8 @@ serde_yaml = "0.9"
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+futures-channel = "0.3"
+futures-core = "0.3"
+
+ipnet = "2.8.0"

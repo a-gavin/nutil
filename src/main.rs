@@ -1,17 +1,29 @@
+// Required for string conversion when getting a connection's SSID
+#![feature(ascii_char)]
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use nm::*;
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
+pub mod access_point;
 pub mod bond;
 pub mod cli;
 pub mod connection;
+pub mod station;
+pub mod util;
 
+use crate::access_point::*;
 use crate::bond::*;
 use crate::cli::*;
 
 fn main() -> Result<()> {
     // Defaults to printing logs at info level for all spans if not specified
-    tracing_subscriber::fmt().pretty().init();
+    // TODO: ^^^^
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(EnvFilter::from_env("NUTIL_LOG"))
+        .init();
 
     let opts = App::parse();
 
@@ -25,10 +37,15 @@ async fn run(args: App) -> Result<()> {
         .context("Failed to create NM Client")?;
 
     match args.command {
-        Command::AccessPoint {
-            action: _,
-            c_args: _,
-        } => todo!(),
+        Command::AccessPoint { action, c_args } => {
+            let opts = parse_access_point_opts(args.config, c_args)?;
+
+            match action {
+                Action::Create => create_access_point(&client, opts).await,
+                Action::Delete => todo!(), //delete_access_point(&client, opts).await,
+                Action::Status => todo!(), //bond_staccess_point(&client, opts),
+            }
+        }
         Command::Bond { action, c_args } => {
             let opts = parse_bond_opts(args.config, c_args)?;
 
