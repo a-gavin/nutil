@@ -252,29 +252,26 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
     // Only possibly active, so assume deactivated until proven otherwise
     let mut conn_state: ActiveConnectionState = ActiveConnectionState::Deactivated;
     let mut ip4_addr_strs: Vec<String> = vec![];
-    match get_active_connection(client, DeviceType::Bond, &bond_conn) {
-        Some(c) => {
-            conn_state = c.state();
+    if let Some(c) = get_active_connection(client, DeviceType::Bond, &bond_conn) {
+        conn_state = c.state();
 
-            // Gather active IPv4 info
-            if let Some(cfg) = c.ip4_config() {
-                // Active IPv4 addresses (i.e. non-NetworkManager configured)
-                for ip4_addr in cfg.addresses() {
-                    let addr = ip4_addr.address().unwrap(); // TODO
-                    let addr_str = addr.as_str();
-                    ip4_addr_strs.push(format!("{}\t(active)", addr_str));
-                }
-            } else {
-                // Expected when bond is waiting to get IP information.
-                // Possible when backing devices are used for other
-                // non-bond slave connections but bond connection is active
-                warn!(
-                    "Unable to get IPv4 config for active bond connection \"{}\"",
-                    opts.bond_ifname
-                )
+        // Gather active IPv4 info
+        if let Some(cfg) = c.ip4_config() {
+            // Active IPv4 addresses (i.e. non-NetworkManager configured)
+            for ip4_addr in cfg.addresses() {
+                let addr = ip4_addr.address().unwrap(); // TODO
+                let addr_str = addr.as_str();
+                ip4_addr_strs.push(format!("{}\t(active)", addr_str));
             }
+        } else {
+            // Expected when bond is waiting to get IP information.
+            // Possible when backing devices are used for other
+            // non-bond slave connections but bond connection is active
+            warn!(
+                "Unable to get IPv4 config for active bond connection \"{}\"",
+                opts.bond_ifname
+            )
         }
-        None => (),
     };
 
     // Try to get connection that matches what we want from NetworkManager
