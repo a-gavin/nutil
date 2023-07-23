@@ -75,13 +75,13 @@ pub fn create_sta_connection(opts: &StationOpts) -> Result<SimpleConnection> {
     let s_wireless = SettingWireless::new();
 
     // General connection settings
-    s_connection.set_type(Some(&SETTING_WIRELESS_SETTING_NAME));
+    s_connection.set_type(Some(SETTING_WIRELESS_SETTING_NAME));
     s_connection.set_id(Some(&opts.wireless_ifname));
     s_connection.set_interface_name(Some(&opts.wireless_ifname));
 
     // Wifi-specific settings
     s_wireless.set_ssid(Some(&(opts.ssid.as_bytes().into())));
-    s_wireless.set_mode(Some(&SETTING_WIRELESS_MODE_INFRA));
+    s_wireless.set_mode(Some(SETTING_WIRELESS_MODE_INFRA));
 
     if let Some(password) = &opts.password {
         let s_wireless_security = SettingWirelessSecurity::new();

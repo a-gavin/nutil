@@ -81,7 +81,7 @@ impl TryFrom<BondArgs> for BondOpts {
 
 #[instrument(skip(client), err)]
 pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
-    if opts.slave_ifnames.len() == 0 {
+    if opts.slave_ifnames.is_empty() {
         return Err(anyhow!(
             "One or more slave interfaces required to create a bond connection"
         ));
@@ -94,7 +94,7 @@ pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
 
     // Make sure a bond connection with same name does not already exist
     // If bond connection using same devices does not exist, good to continue
-    if get_connection(&client, DeviceType::Bond, &bond_conn).is_some() {
+    if get_connection(client, DeviceType::Bond, &bond_conn).is_some() {
         return Err(anyhow!("Bond connection already exists, quitting..."));
     }
 
@@ -109,7 +109,7 @@ pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
 
     for slave_ifname in opts.slave_ifnames.iter() {
         let existing_wired_conn = create_wired_connection(slave_ifname, None)?;
-        match get_active_connection(&client, DeviceType::Ethernet, &existing_wired_conn) {
+        match get_active_connection(client, DeviceType::Ethernet, &existing_wired_conn) {
             Some(c) => {
                 debug!(
                     "Found active standalone wired connection with slave ifname \"{}\", deactivating",
@@ -126,7 +126,7 @@ pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
 
         // If detect an active slave connection with desired slave interface then error and exit
         let existing_wired_conn_slave = create_wired_connection(slave_ifname, Some("ANY"))?;
-        match get_active_connection(&client, DeviceType::Ethernet, &existing_wired_conn_slave) {
+        match get_active_connection(client, DeviceType::Ethernet, &existing_wired_conn_slave) {
             Some(_) => {
                 return Err(anyhow!(
                     "Found existing slave wired connection with ifname \"{}\" matching desired slave ifname",
@@ -190,7 +190,7 @@ pub async fn delete_bond(client: &Client, opts: BondOpts) -> Result<()> {
     let bond_conn = create_bond_connection(&opts.bond_ifname, opts.bond_mode)?;
 
     // Use created SimpleConnection to find matching connections from NetworkManager
-    let bond_remote_conn = match get_connection(&client, DeviceType::Bond, &bond_conn) {
+    let bond_remote_conn = match get_connection(client, DeviceType::Bond, &bond_conn) {
         Some(c) => c,
         None => {
             return Err(anyhow!(
@@ -203,7 +203,7 @@ pub async fn delete_bond(client: &Client, opts: BondOpts) -> Result<()> {
     // Deactivate bond connection
     // Automatically deactivates slave connections on success
     info!("Deactivating bond connection with interface \"{}\" (and associated slave wired connections)", opts.bond_ifname);
-    match get_active_connection(&client, DeviceType::Bond, &bond_conn) {
+    match get_active_connection(client, DeviceType::Bond, &bond_conn) {
         Some(c) => {
             client.deactivate_connection_future(&c).await?;
             info!("Bond connection and associated interfaces deactivated");
@@ -228,7 +228,7 @@ pub async fn delete_bond(client: &Client, opts: BondOpts) -> Result<()> {
     for slave_ifname in opts.slave_ifnames.iter() {
         let wired_conn = create_wired_connection(slave_ifname, Some(&opts.bond_ifname))?;
 
-        match get_connection(&client, DeviceType::Ethernet, &wired_conn) {
+        match get_connection(client, DeviceType::Ethernet, &wired_conn) {
             Some(c) => c.delete_future().await?,
             None => {
                 warn!(
@@ -252,7 +252,7 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
     // Only possibly active, so assume deactivated until proven otherwise
     let mut conn_state: ActiveConnectionState = ActiveConnectionState::Deactivated;
     let mut ip4_addr_strs: Vec<String> = vec![];
-    match get_active_connection(&client, DeviceType::Bond, &bond_conn) {
+    match get_active_connection(client, DeviceType::Bond, &bond_conn) {
         Some(c) => {
             conn_state = c.state();
 
@@ -279,7 +279,7 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
 
     // Try to get connection that matches what we want from NetworkManager
     // If it doesn't exist, no sense continuing
-    let bond_remote_conn = match get_connection(&client, DeviceType::Bond, &bond_conn) {
+    let bond_remote_conn = match get_connection(client, DeviceType::Bond, &bond_conn) {
         Some(c) => c,
         None => {
             return Err(anyhow!(
@@ -318,7 +318,7 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
         }
     }
 
-    let slave_conns = get_slave_connections(&client, &opts.bond_ifname, DeviceType::Ethernet);
+    let slave_conns = get_slave_connections(client, &opts.bond_ifname, DeviceType::Ethernet);
 
     // Begin printing status info
     println!("Name:\t\t{}", &opts.bond_ifname);
@@ -327,7 +327,7 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
     // Backing connections/devices
     print!("Slave devices:");
     if let Some(slave_conns) = slave_conns {
-        if slave_conns.len() == 0 {
+        if slave_conns.is_empty() {
             // Print first addr on same line, but if no addrs, need newline
             println!();
         }
@@ -359,7 +359,7 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
     println!("  Method:\t{}", ip4_method);
 
     print!("  Addresses:");
-    if ip4_addr_strs.len() == 0 {
+    if ip4_addr_strs.is_empty() {
         // Print first addr on same line, but if no addrs, need newline
         println!();
     }
@@ -382,20 +382,20 @@ pub fn create_bond_connection(bond_ifname: &str, bond_mode: BondMode) -> Result<
     let s_bond = SettingBond::new();
 
     // General connection settings
-    s_connection.set_type(Some(&SETTING_BOND_SETTING_NAME));
+    s_connection.set_type(Some(SETTING_BOND_SETTING_NAME));
     s_connection.set_id(Some(bond_ifname));
     s_connection.set_interface_name(Some(bond_ifname));
 
     // Bond-specific settings
     let bond_mode = get_bond_mode_str(bond_mode);
-    if !s_bond.add_option(&SETTING_BOND_OPTION_MODE, bond_mode) {
+    if !s_bond.add_option(SETTING_BOND_OPTION_MODE, bond_mode) {
         error!("Unable to set bond mode option to \"{}\"", bond_mode);
         return Err(anyhow!(
             "Unable to set bond mode option to \"{}\"",
             bond_mode
         ));
     }
-    if !s_bond.add_option(&SETTING_BOND_OPTION_MIIMON, "100") {
+    if !s_bond.add_option(SETTING_BOND_OPTION_MIIMON, "100") {
         error!("Unable to set bond MIIMON option to \"{}\"", "100");
         return Err(anyhow!("Unable to set bond MIIMON option to \"{}\"", "100"));
     }

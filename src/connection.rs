@@ -18,14 +18,14 @@ pub fn create_wired_connection(
     let s_connection = SettingConnection::new();
 
     // General settings
-    s_connection.set_type(Some(&SETTING_WIRED_SETTING_NAME));
+    s_connection.set_type(Some(SETTING_WIRED_SETTING_NAME));
     s_connection.set_id(Some(wired_ifname));
     s_connection.set_interface_name(Some(wired_ifname));
 
     // Master is bond interface name, slave type is type of master interface (i.e. bond)
     if let Some(bond_ifname) = bond_ifname {
         s_connection.set_master(Some(bond_ifname));
-        s_connection.set_slave_type(Some(&SETTING_BOND_SETTING_NAME));
+        s_connection.set_slave_type(Some(SETTING_BOND_SETTING_NAME));
     }
 
     connection.add_setting(s_connection);
@@ -77,9 +77,9 @@ pub fn get_connection(
         };
 
         let found_matching = match device_type {
-            DeviceType::Bond => matching_bond_connection(&conn, &cmp_conn),
-            DeviceType::Ethernet => matching_wired_connection(&conn, &cmp_conn),
-            DeviceType::Wifi => matching_wifi_connection(&conn, &cmp_conn),
+            DeviceType::Bond => matching_bond_connection(conn, &cmp_conn),
+            DeviceType::Ethernet => matching_wired_connection(conn, &cmp_conn),
+            DeviceType::Wifi => matching_wifi_connection(conn, &cmp_conn),
             _ => {
                 // Should never get here given check at beginning of func
                 panic!(
@@ -176,9 +176,9 @@ pub fn get_active_connection(
         };
 
         let found_matching = match device_type {
-            DeviceType::Bond => matching_bond_connection(&conn, &cmp_conn),
-            DeviceType::Ethernet => matching_wired_connection(&conn, &cmp_conn),
-            DeviceType::Wifi => matching_wifi_connection(&conn, &cmp_conn),
+            DeviceType::Bond => matching_bond_connection(conn, &cmp_conn),
+            DeviceType::Ethernet => matching_wired_connection(conn, &cmp_conn),
+            DeviceType::Wifi => matching_wifi_connection(conn, &cmp_conn),
             _ => {
                 // Should never get here given check at beginning of func
                 panic!(

@@ -65,7 +65,7 @@ impl TryFrom<AccessPointArgs> for AccessPointOpts {
         };
 
         let ip4_addr = match &args.ip4_addr {
-            Some(addr) => Ipv4Net::from_str(&addr.as_str())?,
+            Some(addr) => Ipv4Net::from_str(addr.as_str())?,
             None => default_ip4_addr(),
         };
 
@@ -80,7 +80,7 @@ impl TryFrom<AccessPointArgs> for AccessPointOpts {
 
 #[instrument(skip(client), err)]
 pub async fn create_access_point(client: &Client, opts: AccessPointOpts) -> Result<()> {
-    if opts.wireless_ifname.len() == 0 {
+    if opts.wireless_ifname.is_empty() {
         return Err(anyhow!("Required wireless interface not specified"));
     }
 
@@ -91,7 +91,7 @@ pub async fn create_access_point(client: &Client, opts: AccessPointOpts) -> Resu
 
     // Make sure an AP connection with same name does not already exist
     // If bond connection using same devices does not exist, good to continue
-    if get_connection(&client, DeviceType::Wifi, &ap_conn).is_some() {
+    if get_connection(client, DeviceType::Wifi, &ap_conn).is_some() {
         return Err(anyhow!(
             "Access point connection already exists, quitting..."
         ));
@@ -104,7 +104,7 @@ pub async fn create_access_point(client: &Client, opts: AccessPointOpts) -> Resu
     // connection to Network Manager, it is purely local
     let sta_conn = create_sta_connection(&opts.clone().into())?;
 
-    match get_active_connection(&client, DeviceType::Wifi, &sta_conn) {
+    match get_active_connection(client, DeviceType::Wifi, &sta_conn) {
         Some(c) => {
             debug!(
                 "Found active standalone wired connection with slave ifname \"{}\", deactivating",
@@ -175,7 +175,7 @@ pub fn create_access_point_connection(opts: &AccessPointOpts) -> Result<SimpleCo
     let s_ip4 = SettingIP4Config::new();
 
     // General connection settings
-    s_connection.set_type(Some(&SETTING_WIRELESS_SETTING_NAME));
+    s_connection.set_type(Some(SETTING_WIRELESS_SETTING_NAME));
     s_connection.set_id(Some(&opts.ssid));
     s_connection.set_interface_name(Some(&opts.wireless_ifname));
     s_connection.set_autoconnect(false);
@@ -184,7 +184,7 @@ pub fn create_access_point_connection(opts: &AccessPointOpts) -> Result<SimpleCo
     s_wireless.set_ssid(Some(&(opts.ssid.as_bytes().into())));
     //s_wireless.set_band(Some("bg"));
     s_wireless.set_hidden(false);
-    s_wireless.set_mode(Some(&SETTING_WIRELESS_MODE_AP));
+    s_wireless.set_mode(Some(SETTING_WIRELESS_MODE_AP));
 
     if let Some(password) = &opts.password {
         let s_wireless_security = SettingWirelessSecurity::new();
@@ -195,11 +195,11 @@ pub fn create_access_point_connection(opts: &AccessPointOpts) -> Result<SimpleCo
 
     let ip4_addr = IPAddress::new(
         libc::AF_INET,
-        &opts.ip4_addr.addr().to_string().as_str(),
+        opts.ip4_addr.addr().to_string().as_str(),
         opts.ip4_addr.prefix_len() as u32,
     )?;
     s_ip4.add_address(&ip4_addr);
-    s_ip4.set_method(Some(&SETTING_IP4_CONFIG_METHOD_MANUAL));
+    s_ip4.set_method(Some(SETTING_IP4_CONFIG_METHOD_MANUAL));
 
     connection.add_setting(s_connection);
     connection.add_setting(s_wireless);

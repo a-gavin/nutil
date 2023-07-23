@@ -23,9 +23,9 @@ where
 {
     let s: String = Deserialize::deserialize(deserializer)?;
 
-    if s.len() > 0 && s.len() < 8 {
+    if !s.is_empty() && s.len() < 8 {
         Err(anyhow!("Password must be 8 chars or longer")).map_err(D::Error::custom)
-    } else if !utils_wpa_psk_valid(&s.as_str()) {
+    } else if !utils_wpa_psk_valid(s.as_str()) {
         Err(anyhow!("libnm says your PSK is invalid ¯\\_(ツ)_/¯")).map_err(D::Error::custom)
     } else {
         Ok(Some(s))
