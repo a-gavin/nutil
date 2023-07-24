@@ -81,7 +81,7 @@ pub async fn create_access_point(client: &Client, opts: AccessPointOpts) -> Resu
 
     let ssid = match &opts.ssid {
         Some(ssid) => ssid,
-        None => return Err(anyhow!("Required wireless interface not specified")),
+        None => return Err(anyhow!("Required SSID not specified")),
     };
 
     // Create AP struct here so we can comprehensively search
@@ -172,6 +172,61 @@ pub async fn create_access_point(client: &Client, opts: AccessPointOpts) -> Resu
     res
 }
 
+#[instrument(skip(client), err)]
+pub async fn delete_access_point(client: &Client, opts: AccessPointOpts) -> Result<()> {
+    let wireless_ifname = match &opts.wireless_ifname {
+        Some(ifname) => ifname,
+        None => return Err(anyhow!("Required wireless interface not specified")),
+    };
+
+    let ssid = match &opts.ssid {
+        Some(ssid) => ssid,
+        None => return Err(anyhow!("Required SSID not specified")),
+    };
+
+    let ap_conn = create_access_point_connection(&opts)?;
+
+    // Use created SimpleConnection to find matching connections from NetworkManager
+    let ap_remote_conn = match get_connection(client, DeviceType::Wifi, &ap_conn) {
+        Some(c) => c,
+        None => {
+            return Err(anyhow!(
+                "Required access point connection \"{}\" does not exist, quitting...",
+                &ssid
+            ));
+        }
+    };
+
+    // Deactivate access_point connection
+    // Automatically deactivates slave connections on success
+    info!(
+        "Deactivating access point connection \"{}\" with interface \"{}\"",
+        ssid, wireless_ifname
+    );
+    match get_active_connection(client, DeviceType::Wifi, &ap_conn) {
+        Some(c) => {
+            client.deactivate_connection_future(&c).await?;
+            info!("Access point connection deactivated");
+        }
+        None => {
+            info!(
+                "Required access point connection \"{}\" is not active",
+                &ssid
+            );
+        }
+    };
+
+    // Delete access_point connection
+    info!(
+        "Deleting access point connection \"{}\" with interface \"{}\"",
+        ssid, wireless_ifname,
+    );
+    ap_remote_conn.delete_future().await?;
+    info!("Access point connection deleted");
+
+    Ok(())
+}
+
 pub fn create_access_point_connection(opts: &AccessPointOpts) -> Result<SimpleConnection> {
     let connection = SimpleConnection::new();
 
@@ -190,6 +245,9 @@ pub fn create_access_point_connection(opts: &AccessPointOpts) -> Result<SimpleCo
         None => return Err(anyhow!("Required SSID not specified")),
     };
 
+    // TODO: Allow for this to be None. That way user doesn't need to
+    // specify interface for deletion/status as it's rly not required
+    // Allows for more interesting matching as well
     match &opts.wireless_ifname {
         Some(ifname) => s_connection.set_interface_name(Some(ifname)),
         None => return Err(anyhow!("Required wireless interface not specified")),

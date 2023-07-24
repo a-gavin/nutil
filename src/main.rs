@@ -43,7 +43,7 @@ async fn run(args: App) -> Result<()> {
 
             match action {
                 Action::Create => create_access_point(&client, opts).await,
-                Action::Delete => todo!(), //delete_access_point(&client, opts).await,
+                Action::Delete => delete_access_point(&client, opts).await,
                 Action::Status => todo!(), //bond_staccess_point(&client, opts),
             }
         }
