@@ -37,8 +37,9 @@ async fn run(args: App) -> Result<()> {
         .context("Failed to create NM Client")?;
 
     match args.command {
-        Command::AccessPoint { action, c_args } => {
-            let opts = parse_access_point_opts(args.config, c_args)?;
+        Command::AccessPoint { action, mut c_args } => {
+            c_args.config = args.config;
+            let opts = AccessPointOpts::try_from(c_args)?;
 
             match action {
                 Action::Create => create_access_point(&client, opts).await,
@@ -46,8 +47,9 @@ async fn run(args: App) -> Result<()> {
                 Action::Status => todo!(), //bond_staccess_point(&client, opts),
             }
         }
-        Command::Bond { action, c_args } => {
-            let opts = parse_bond_opts(args.config, c_args)?;
+        Command::Bond { action, mut c_args } => {
+            c_args.config = args.config;
+            let opts = BondOpts::try_from(c_args)?;
 
             match action {
                 Action::Create => create_bond(&client, opts).await,

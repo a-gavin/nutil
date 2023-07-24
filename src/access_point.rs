@@ -1,7 +1,8 @@
-use std::cell::RefCell;
 use std::fs::File;
 use std::rc::Rc;
+use std::str;
 use std::str::FromStr;
+use std::{cell::RefCell, io::Read};
 
 use anyhow::{anyhow, Result};
 use futures_channel::oneshot;
@@ -35,25 +36,19 @@ pub struct AccessPointOpts {
     pub ip4_addr: Ipv4Net,
 }
 
-#[instrument(err)]
-pub fn parse_access_point_opts(
-    config: Option<String>,
-    args: AccessPointArgs,
-) -> Result<AccessPointOpts> {
-    match config {
-        Some(cfg) => {
-            let cfg_file = File::open(cfg)?;
-            let opts: AccessPointOpts = serde_yaml::from_reader(cfg_file)?;
-            Ok(opts)
-        }
-        None => AccessPointOpts::try_from(args),
-    }
-}
-
 impl TryFrom<AccessPointArgs> for AccessPointOpts {
     type Error = anyhow::Error;
 
     fn try_from(args: AccessPointArgs) -> Result<Self, Self::Error> {
+        if let Some(cfg) = args.config {
+            let mut buf = vec![];
+            let mut cfg_file = File::open(cfg)?;
+            cfg_file.read_to_end(&mut buf)?;
+
+            let config = str::from_utf8(buf.as_slice())?;
+            return parse_access_point_opts(config);
+        }
+
         let wireless_ifname = match args.wireless_ifname {
             Some(ifname) => ifname,
             None => "".to_string(),
@@ -76,6 +71,11 @@ impl TryFrom<AccessPointArgs> for AccessPointOpts {
             password: args.password,
         })
     }
+}
+
+fn parse_access_point_opts(config: &str) -> Result<AccessPointOpts> {
+    let opts: AccessPointOpts = serde_yaml::from_str(config)?;
+    Ok(opts)
 }
 
 #[instrument(skip(client), err)]

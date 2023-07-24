@@ -61,6 +61,9 @@ pub struct AccessPointArgs {
     pub ip4_addr: Option<String>,
 
     pub password: Option<String>,
+
+    #[clap(skip)]
+    pub config: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -76,6 +79,9 @@ pub struct BondArgs {
     /// Bond backing wired device interface names (required for creation and deletion)
     #[clap(name = "slave_interfaces")]
     pub slave_ifnames: Vec<String>,
+
+    #[clap(skip)]
+    pub config: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -85,4 +91,7 @@ pub struct StationArgs {
     pub ssid: Option<String>,
 
     pub password: Option<String>,
+
+    #[clap(skip)]
+    pub config: Option<String>,
 }

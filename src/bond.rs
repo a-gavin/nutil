@@ -1,4 +1,6 @@
 use std::fs::File;
+use std::io::Read;
+use std::str;
 
 use anyhow::{anyhow, Result};
 use clap::ValueEnum;
@@ -33,22 +35,19 @@ pub struct BondOpts {
     slave_ifnames: Vec<String>,
 }
 
-#[instrument(err)]
-pub fn parse_bond_opts(config: Option<String>, args: BondArgs) -> Result<BondOpts> {
-    match config {
-        Some(cfg) => {
-            let cfg_file = File::open(cfg)?;
-            let opts: BondOpts = serde_yaml::from_reader(cfg_file)?;
-            Ok(opts)
-        }
-        None => BondOpts::try_from(args),
-    }
-}
-
 impl TryFrom<BondArgs> for BondOpts {
     type Error = anyhow::Error;
 
     fn try_from(args: BondArgs) -> Result<Self, Self::Error> {
+        if let Some(cfg) = args.config {
+            let mut buf = vec![];
+            let mut cfg_file = File::open(cfg)?;
+            cfg_file.read_to_end(&mut buf)?;
+
+            let config = str::from_utf8(buf.as_slice())?;
+            return parse_bond_opts(config);
+        }
+
         let bond_ifname = match args.ifname {
             Some(ifname) => ifname,
             None => return Err(anyhow!("Bond interface name not specified")),
@@ -77,6 +76,11 @@ impl TryFrom<BondArgs> for BondOpts {
             slave_ifnames: args.slave_ifnames,
         })
     }
+}
+
+fn parse_bond_opts(config: &str) -> Result<BondOpts> {
+    let opts: BondOpts = serde_yaml::from_str(config)?;
+    Ok(opts)
 }
 
 #[instrument(skip(client), err)]
