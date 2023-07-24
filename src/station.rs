@@ -10,10 +10,8 @@ use serde::Deserialize;
 use tracing::{debug, info, instrument};
 
 use crate::{
-    access_point::AccessPointOpts,
-    cli::StationArgs,
-    connection::get_active_connection,
-    util::{default_ip4_addr, deserialize_ip4_addr, deserialize_password},
+    access_point::AccessPointOpts, cli::StationArgs, connection::get_active_connection,
+    util::deserialize_password,
 };
 
 #[derive(Default, Deserialize, PartialEq, Clone, Debug)]
@@ -32,9 +30,9 @@ pub struct StationOpts {
     #[serde(deserialize_with = "deserialize_password")]
     pub password: Option<String>,
 
-    #[serde(deserialize_with = "deserialize_ip4_addr")]
-    #[serde(default = "default_ip4_addr")]
-    pub ip4_addr: Ipv4Net,
+    #[serde(default)]
+    #[serde(with = "serde_with::rust::string_empty_as_none")]
+    pub ip4_addr: Option<String>,
 }
 
 impl TryFrom<StationArgs> for StationOpts {
@@ -50,15 +48,10 @@ impl TryFrom<StationArgs> for StationOpts {
             return parse_station_opts(config);
         }
 
-        let ip4_addr = match &args.ip4_addr {
-            Some(addr) => Ipv4Net::from_str(addr.as_str())?,
-            None => default_ip4_addr(),
-        };
-
         Ok(StationOpts {
             wireless_ifname: args.wireless_ifname,
             ssid: args.ssid,
-            ip4_addr,
+            ip4_addr: args.ip4_addr,
             password: args.password,
         })
     }
@@ -152,6 +145,7 @@ pub fn create_sta_connection(opts: &StationOpts) -> Result<SimpleConnection> {
 
     let s_connection = SettingConnection::new();
     let s_wireless = SettingWireless::new();
+    let s_ip4 = SettingIP4Config::new();
 
     // General connection settings
     s_connection.set_type(Some(SETTING_WIRELESS_SETTING_NAME));
@@ -186,10 +180,30 @@ pub fn create_sta_connection(opts: &StationOpts) -> Result<SimpleConnection> {
         connection.add_setting(s_wireless_security);
     }
 
-    // TODO: Static IPv4 addr if specified
+    // IPv4 settings
+    match &opts.ip4_addr {
+        Some(addr) => {
+            let ip4_net = Ipv4Net::from_str(addr)?;
+
+            let ip4_addr = IPAddress::new(
+                libc::AF_INET,
+                ip4_net.addr().to_string().as_str(),
+                ip4_net.prefix_len() as u32,
+            )?;
+
+            s_ip4.add_address(&ip4_addr);
+            s_ip4.set_method(Some(SETTING_IP4_CONFIG_METHOD_MANUAL));
+        }
+        None => {
+            s_ip4.set_method(Some(SETTING_IP4_CONFIG_METHOD_AUTO));
+        }
+    }
 
     connection.add_setting(s_connection);
     connection.add_setting(s_wireless);
+    connection.add_setting(s_ip4);
 
     Ok(connection)
 }
+
+// TODO: Impl unit tests for create_sta_connection

@@ -16,7 +16,7 @@ use crate::{
     cli::AccessPointArgs,
     connection::{get_active_connection, get_connection, get_connection_state_str},
     station::create_sta_connection,
-    util::{default_ip4_addr, deserialize_ip4_addr, deserialize_password},
+    util::{deserialize_password, DEFAULT_IP4_ADDR},
 };
 
 #[derive(Default, Deserialize, PartialEq, Clone, Debug)]
@@ -35,9 +35,9 @@ pub struct AccessPointOpts {
     #[serde(deserialize_with = "deserialize_password")]
     pub password: Option<String>,
 
-    #[serde(deserialize_with = "deserialize_ip4_addr")]
-    #[serde(default = "default_ip4_addr")]
-    pub ip4_addr: Ipv4Net,
+    #[serde(default)]
+    #[serde(with = "serde_with::rust::string_empty_as_none")]
+    pub ip4_addr: Option<String>,
 }
 
 impl TryFrom<AccessPointArgs> for AccessPointOpts {
@@ -53,15 +53,10 @@ impl TryFrom<AccessPointArgs> for AccessPointOpts {
             return parse_access_point_opts(config);
         }
 
-        let ip4_addr = match &args.ip4_addr {
-            Some(addr) => Ipv4Net::from_str(addr.as_str())?,
-            None => default_ip4_addr(),
-        };
-
         Ok(AccessPointOpts {
             wireless_ifname: args.wireless_ifname,
             ssid: args.ssid,
-            ip4_addr,
+            ip4_addr: args.ip4_addr,
             password: args.password,
         })
     }
@@ -377,11 +372,17 @@ pub fn create_access_point_connection(opts: &AccessPointOpts) -> Result<SimpleCo
         connection.add_setting(s_wireless_security);
     }
 
+    // IPv4 settings
+    let ip4_net = match &opts.ip4_addr {
+        Some(addr) => Ipv4Net::from_str(addr)?,
+        None => Ipv4Net::from_str(DEFAULT_IP4_ADDR)?,
+    };
     let ip4_addr = IPAddress::new(
         libc::AF_INET,
-        opts.ip4_addr.addr().to_string().as_str(),
-        opts.ip4_addr.prefix_len() as u32,
+        ip4_net.addr().to_string().as_str(),
+        ip4_net.prefix_len() as u32,
     )?;
+
     s_ip4.add_address(&ip4_addr);
     s_ip4.set_method(Some(SETTING_IP4_CONFIG_METHOD_MANUAL));
 
@@ -394,10 +395,7 @@ pub fn create_access_point_connection(opts: &AccessPointOpts) -> Result<SimpleCo
 
 #[cfg(test)]
 mod test {
-    use ipnet::Ipv4Net;
-
     use super::*;
-    use crate::util::DEFAULT_IP4_ADDR;
 
     // Expect empty interface which should be caught later on
     // when attempting to create connection
@@ -501,10 +499,7 @@ mod test {
         ";
 
         let opts = parse_access_point_opts(cfg).unwrap();
-
-        let ipv_net = Ipv4Net::from_str(DEFAULT_IP4_ADDR).unwrap();
-        assert_eq!(ipv_net.addr(), opts.ip4_addr.addr());
-        assert_eq!(ipv_net.prefix_len(), opts.ip4_addr.prefix_len());
+        assert!(opts.ip4_addr.is_none());
     }
 
     #[test]
@@ -515,19 +510,6 @@ mod test {
             ssid: \"test_ssid\"
             password: \"123\"
             ip4_addr: \"\"
-        ";
-
-        parse_access_point_opts(cfg).unwrap();
-    }
-
-    #[test]
-    #[should_panic]
-    fn no_ip4_addr_subnet() {
-        let cfg = "
-            wireless_interface: \"test_interface\"
-            ssid: \"test_ssid\"
-            password: \"test_password\"
-            ip4_addr: \"172.16.0.1\"
         ";
 
         parse_access_point_opts(cfg).unwrap();

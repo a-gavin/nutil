@@ -1,15 +1,8 @@
-use std::str::FromStr;
-
 use anyhow::{anyhow, Result};
-use ipnet::Ipv4Net;
 use nm::utils_wpa_psk_valid;
 use serde::{de::Error, Deserialize, Deserializer};
 
 pub const DEFAULT_IP4_ADDR: &str = "192.0.2.1/24";
-
-pub fn default_ip4_addr() -> Ipv4Net {
-    Ipv4Net::from_str(DEFAULT_IP4_ADDR).unwrap()
-}
 
 pub fn deserialize_password<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
@@ -28,11 +21,11 @@ where
     }
 }
 
-pub fn deserialize_ip4_addr<'de, D>(deserializer: D) -> Result<Ipv4Net, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s: String = Deserialize::deserialize(deserializer)?;
-
-    Ipv4Net::from_str(&s).map_err(D::Error::custom)
-}
+//pub fn deserialize_ip4_addr<'de, D>(deserializer: D) -> Result<Ipv4Net, D::Error>
+//where
+//    D: Deserializer<'de>,
+//{
+//    let s: String = Deserialize::deserialize(deserializer)?;
+//
+//    Ipv4Net::from_str(&s).map_err(D::Error::custom)
+//}
