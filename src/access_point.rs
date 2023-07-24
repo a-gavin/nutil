@@ -107,13 +107,13 @@ pub async fn create_access_point(client: &Client, opts: AccessPointOpts) -> Resu
     match get_active_connection(client, DeviceType::Wifi, &sta_conn) {
         Some(c) => {
             debug!(
-                "Found active standalone wired connection with slave ifname \"{}\", deactivating",
+                "Found active wireless connection with ifname \"{}\", deactivating",
                 wireless_ifname
             );
             client.deactivate_connection_future(&c).await?;
         }
         None => debug!(
-            "No matching active standalone wired connection for interface \"{}\"",
+            "No matching active wireless connections for interface \"{}\"",
             wireless_ifname
         ),
     };
@@ -122,7 +122,7 @@ pub async fn create_access_point(client: &Client, opts: AccessPointOpts) -> Resu
         Some(device) => device,
         None => {
             return Err(anyhow!(
-                "Wired device \"{}\" does not exist, quitting...",
+                "Wireless device \"{}\" does not exist, quitting...",
                 wireless_ifname
             ));
         }

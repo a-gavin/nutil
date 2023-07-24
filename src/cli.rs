@@ -16,6 +16,14 @@ pub struct App {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    // Configure NetworkManager-managed station (wireless client) connections
+    Station {
+        #[clap(value_enum)]
+        action: Action,
+
+        #[clap(flatten)]
+        c_args: StationArgs,
+    },
     // Configure NetworkManager-managed access point (wireless) connections
     AccessPoint {
         #[clap(value_enum)]
@@ -52,6 +60,20 @@ pub enum Action {
 }
 
 #[derive(Args, Debug)]
+pub struct StationArgs {
+    pub ssid: Option<String>,
+
+    pub wireless_ifname: Option<String>,
+
+    pub ip4_addr: Option<String>,
+
+    pub password: Option<String>,
+
+    #[clap(skip)]
+    pub config: Option<String>,
+}
+
+#[derive(Args, Debug)]
 pub struct AccessPointArgs {
     pub ssid: Option<String>,
 
@@ -78,18 +100,6 @@ pub struct BondArgs {
     /// Bond backing wired device interface names (required for creation and deletion)
     #[clap(name = "slave_interfaces")]
     pub slave_ifnames: Vec<String>,
-
-    #[clap(skip)]
-    pub config: Option<String>,
-}
-
-#[derive(Args, Debug)]
-pub struct StationArgs {
-    pub wireless_ifname: Option<String>,
-
-    pub ssid: Option<String>,
-
-    pub password: Option<String>,
 
     #[clap(skip)]
     pub config: Option<String>,

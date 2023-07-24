@@ -1,14 +1,18 @@
 use std::fs::File;
+use std::io::Read;
+use std::str;
+use std::str::FromStr;
 
 use anyhow::{anyhow, Result};
 use ipnet::Ipv4Net;
 use nm::*;
 use serde::Deserialize;
-use tracing::instrument;
+use tracing::{debug, info, instrument};
 
 use crate::{
     access_point::AccessPointOpts,
     cli::StationArgs,
+    connection::get_active_connection,
     util::{default_ip4_addr, deserialize_ip4_addr, deserialize_password},
 };
 
@@ -33,25 +37,29 @@ pub struct StationOpts {
     pub ip4_addr: Ipv4Net,
 }
 
-#[instrument(err)]
-pub fn parse_access_point_opts(config: Option<String>, args: StationArgs) -> Result<StationOpts> {
-    match config {
-        Some(cfg) => {
-            let cfg_file = File::open(cfg)?;
-            let opts: StationOpts = serde_yaml::from_reader(cfg_file)?;
-            Ok(opts)
-        }
-        None => StationOpts::try_from(args),
-    }
-}
-
 impl TryFrom<StationArgs> for StationOpts {
     type Error = anyhow::Error;
 
     fn try_from(args: StationArgs) -> Result<Self, Self::Error> {
+        if let Some(cfg) = args.config {
+            let mut buf = vec![];
+            let mut cfg_file = File::open(cfg)?;
+            cfg_file.read_to_end(&mut buf)?;
+
+            let config = str::from_utf8(buf.as_slice())?;
+            return parse_station_opts(config);
+        }
+
+        let ip4_addr = match &args.ip4_addr {
+            Some(addr) => Ipv4Net::from_str(addr.as_str())?,
+            None => default_ip4_addr(),
+        };
+
         Ok(StationOpts {
             wireless_ifname: args.wireless_ifname,
-            ..Default::default()
+            ssid: args.ssid,
+            ip4_addr,
+            password: args.password,
         })
     }
 }
@@ -65,6 +73,78 @@ impl From<AccessPointOpts> for StationOpts {
             ip4_addr: opts.ip4_addr,
         }
     }
+}
+
+fn parse_station_opts(config: &str) -> Result<StationOpts> {
+    let opts: StationOpts = serde_yaml::from_str(config)?;
+    Ok(opts)
+}
+
+#[instrument(skip(client), err)]
+pub async fn create_station(client: &Client, opts: StationOpts) -> Result<()> {
+    let wireless_ifname = match &opts.wireless_ifname {
+        Some(ifname) => ifname,
+        None => return Err(anyhow!("Required wireless interface not specified")),
+    };
+
+    let ssid = match &opts.ssid {
+        Some(ssid) => ssid,
+        None => return Err(anyhow!("Required SSID not specified")),
+    };
+
+    // Create STA struct here so we can comprehensively search
+    // for any matching existing connection, should it exist
+    // Does not add connection to Network Manager, that happens later
+    let sta_conn = create_sta_connection(&opts)?;
+
+    // Make sure STA connection with same name does not already exist
+    // If bond connection using same devices does not exist, good to continue
+    // NOTE: See TODO in matching_wifi_connection()
+    //if get_connection(client, DeviceType::Wifi, &sta_conn).is_some() {
+    //    return Err(anyhow!("Station connection already exists, quitting..."));
+    //}
+
+    // Check for and deactivate any existing active station connections
+    // which share the same wireless interface.
+    //
+    // Station connection added for searching purposes. Does not add
+    // connection to Network Manager, it is purely local
+    match get_active_connection(client, DeviceType::Wifi, &sta_conn) {
+        Some(c) => {
+            debug!(
+                "Found active station connection with ifname \"{}\", deactivating",
+                wireless_ifname
+            );
+            client.deactivate_connection_future(&c).await?;
+        }
+        None => debug!(
+            "No matching active wireless station connections for interface \"{}\"",
+            wireless_ifname
+        ),
+    };
+
+    // TODO check for AP conns, need to impl try_from() for StationOpts
+    let wireless_dev = match client.device_by_iface(wireless_ifname.as_str()) {
+        Some(device) => device,
+        None => {
+            return Err(anyhow!(
+                "Wireless device \"{}\" does not exist, quitting...",
+                wireless_ifname
+            ));
+        }
+    };
+
+    info!("Creating access point connection \"{}\"", ssid);
+    let sta_conn = client.add_connection_future(&sta_conn, true).await?;
+
+    info!("Activating access point connection \"{}\"", ssid);
+    let _sta_conn = client
+        .activate_connection_future(Some(&sta_conn), Some(&wireless_dev), None)
+        .await?;
+
+    // TODO: Impl wait for connection to be Activated state
+
+    Ok(())
 }
 
 pub fn create_sta_connection(opts: &StationOpts) -> Result<SimpleConnection> {
@@ -105,6 +185,8 @@ pub fn create_sta_connection(opts: &StationOpts) -> Result<SimpleConnection> {
         s_wireless_security.set_psk(Some(password));
         connection.add_setting(s_wireless_security);
     }
+
+    // TODO: Static IPv4 addr if specified
 
     connection.add_setting(s_connection);
     connection.add_setting(s_wireless);

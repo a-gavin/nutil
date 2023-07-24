@@ -16,6 +16,7 @@ pub mod util;
 use crate::access_point::*;
 use crate::bond::*;
 use crate::cli::*;
+use crate::station::*;
 
 fn main() -> Result<()> {
     // Defaults to printing logs at info level for all spans if not specified
@@ -37,6 +38,16 @@ async fn run(args: App) -> Result<()> {
         .context("Failed to create NM Client")?;
 
     match args.command {
+        Command::Station { action, mut c_args } => {
+            c_args.config = args.config;
+            let opts = StationOpts::try_from(c_args)?;
+
+            match action {
+                Action::Create => create_station(&client, opts).await,
+                Action::Delete => todo!(), //delete_access_point(&client, opts).await,
+                Action::Status => todo!(), //access_point_status(&client, opts),
+            }
+        }
         Command::AccessPoint { action, mut c_args } => {
             c_args.config = args.config;
             let opts = AccessPointOpts::try_from(c_args)?;

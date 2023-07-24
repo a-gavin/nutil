@@ -644,7 +644,8 @@ pub fn matching_wifi_connection(conn: &SimpleConnection, cmp_conn: &Connection) 
 
     // Get and compare SSIDs if both connections are APs
     if conn_mode == "ap" && cmp_conn_mode == "ap" {
-        // TODO: Make into an enum??
+        // TODO: change comparison logic to use option types
+        // which when both Some then do comparison, if not ignore
         let conn_ssid = match conn_wireless_settings.ssid() {
             Some(ssid) => ssid,
             None => {
