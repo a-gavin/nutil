@@ -25,6 +25,7 @@ pub enum BondMode {
 
 #[derive(Default, Deserialize, PartialEq, Clone, Debug)]
 pub struct BondOpts {
+    /// Required for all commands, so no default if unspecified
     #[serde(rename = "bond_interface")]
     bond_ifname: String,
 
@@ -416,5 +417,105 @@ fn get_bond_mode_str(mode: BondMode) -> &'static str {
         BondMode::DynamicLinkAggregation => todo!(),
         BondMode::TransmitLoadBalancing => todo!(),
         BondMode::AdaptiveLoadBalancing => todo!(),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    #[should_panic]
+    fn no_bond_ifname() {
+        let cfg = "
+            bond_mode: !ActiveBackup
+            slave_interfaces:
+                - enp2s0
+        ";
+
+        parse_bond_opts(cfg).unwrap();
+    }
+
+    #[test]
+    fn empty_bond_ifname() {
+        let cfg = "
+            bond_interface: \"\"
+            bond_mode: !ActiveBackup
+            slave_interfaces:
+                - enp2s0
+        ";
+
+        let opts = parse_bond_opts(cfg).unwrap();
+        assert_eq!(opts.bond_ifname, "");
+        // TODO: Where to check for this? Currently don't. Could check in serde deserializing
+        // or in bond command func itself
+    }
+
+    // Expect to default to BondMode default
+    #[test]
+    fn no_bond_mode() {
+        let cfg = "
+            bond_interface: bond0
+            slave_interfaces:
+                - enp2s0
+        ";
+
+        let opts = parse_bond_opts(cfg).unwrap();
+        assert_eq!(opts.bond_mode, BondMode::ActiveBackup);
+        // TODO: More intelligently get default so that if changes this test continues to work
+    }
+
+    #[test]
+    #[should_panic]
+    fn empty_bond_mode() {
+        let cfg = "
+            bond_interface: bond0
+            bond_mode: \"\"
+            slave_interfaces:
+                - enp2s0
+        ";
+
+        parse_bond_opts(cfg).unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn unexpected_bond_mode() {
+        let cfg = "
+            bond_interface: bond0
+            bond_mode: !UnexpectedMode
+            slave_interfaces:
+                - enp2s0
+        ";
+
+        parse_bond_opts(cfg).unwrap();
+    }
+
+    // Command-specific behaviour for "slave_interfaces" field. Create and delete
+    // need slave interfaces; status does not. Create and delete thus are required
+    // to validate that user specified slave interfaces.
+    // Expect empty Vec of interface names when unspecified.
+    #[test]
+    fn no_bond_slave_interfaces() {
+        let cfg = "
+            bond_interface: bond0
+            bond_mode: !ActiveBackup
+        ";
+
+        let opts = parse_bond_opts(cfg).unwrap();
+        assert!(opts.slave_ifnames.is_empty());
+    }
+
+    // See above "slave_interfaces" comment
+    #[test]
+    fn empty_slave_interfaces() {
+        let cfg = "
+            bond_interface: bond0
+            bond_mode: !ActiveBackup
+            slave_interfaces:
+        ";
+
+        let opts = parse_bond_opts(cfg).unwrap();
+        assert!(opts.slave_ifnames.is_empty());
     }
 }

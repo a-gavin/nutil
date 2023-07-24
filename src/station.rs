@@ -15,11 +15,16 @@ use crate::{
 #[derive(Default, Deserialize, PartialEq, Clone, Debug)]
 pub struct StationOpts {
     #[serde(rename = "wireless_interface")]
-    pub wireless_ifname: String,
+    #[serde(default)]
+    #[serde(with = "serde_with::rust::string_empty_as_none")]
+    pub wireless_ifname: Option<String>,
 
-    pub ssid: String,
+    #[serde(default)]
+    #[serde(with = "serde_with::rust::string_empty_as_none")]
+    pub ssid: Option<String>,
 
     /// Must be 8 characters or longer
+    #[serde(default)]
     #[serde(deserialize_with = "deserialize_password")]
     pub password: Option<String>,
 
@@ -44,13 +49,8 @@ impl TryFrom<StationArgs> for StationOpts {
     type Error = anyhow::Error;
 
     fn try_from(args: StationArgs) -> Result<Self, Self::Error> {
-        let wireless_ifname = match args.wireless_ifname {
-            Some(ifname) => ifname,
-            None => return Err(anyhow!("Wireless interface name not specified")),
-        };
-
         Ok(StationOpts {
-            wireless_ifname,
+            wireless_ifname: args.wireless_ifname,
             ..Default::default()
         })
     }
@@ -62,8 +62,7 @@ impl From<AccessPointOpts> for StationOpts {
             wireless_ifname: opts.wireless_ifname,
             ssid: opts.ssid,
             password: opts.password,
-            // TODO: Determine if we should copy ip addr?
-            ..Default::default()
+            ip4_addr: opts.ip4_addr,
         }
     }
 }
@@ -76,13 +75,30 @@ pub fn create_sta_connection(opts: &StationOpts) -> Result<SimpleConnection> {
 
     // General connection settings
     s_connection.set_type(Some(SETTING_WIRELESS_SETTING_NAME));
-    s_connection.set_id(Some(&opts.wireless_ifname));
-    s_connection.set_interface_name(Some(&opts.wireless_ifname));
+
+    match &opts.ssid {
+        Some(ssid) => {
+            s_connection.set_id(Some(ssid));
+        }
+        None => return Err(anyhow!("Required SSID not specified")),
+    };
+
+    match &opts.wireless_ifname {
+        Some(ifname) => s_connection.set_interface_name(Some(ifname)),
+        None => return Err(anyhow!("Required wireless interface not specified")),
+    };
 
     // Wifi-specific settings
-    s_wireless.set_ssid(Some(&(opts.ssid.as_bytes().into())));
     s_wireless.set_mode(Some(SETTING_WIRELESS_MODE_INFRA));
 
+    match &opts.ssid {
+        Some(ssid) => {
+            s_wireless.set_ssid(Some(&(ssid.as_bytes().into())));
+        }
+        None => return Err(anyhow!("Required SSID not specified")),
+    };
+
+    // Wifi security settings
     if let Some(password) = &opts.password {
         let s_wireless_security = SettingWirelessSecurity::new();
         s_wireless_security.set_key_mgmt(Some("wpa-psk")); // TODO

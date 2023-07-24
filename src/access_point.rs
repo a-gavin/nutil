@@ -16,18 +16,22 @@ use crate::{
     cli::AccessPointArgs,
     connection::{get_active_connection, get_connection, get_connection_state_str},
     station::create_sta_connection,
-    util::{default_ip4_addr, default_wireless_ifname, deserialize_ip4_addr, deserialize_password},
+    util::{default_ip4_addr, deserialize_ip4_addr, deserialize_password},
 };
 
 #[derive(Default, Deserialize, PartialEq, Clone, Debug)]
 pub struct AccessPointOpts {
     #[serde(rename = "wireless_interface")]
-    #[serde(default = "default_wireless_ifname")]
-    pub wireless_ifname: String,
+    #[serde(default)]
+    #[serde(with = "serde_with::rust::string_empty_as_none")]
+    pub wireless_ifname: Option<String>,
 
-    pub ssid: String,
+    #[serde(default)]
+    #[serde(with = "serde_with::rust::string_empty_as_none")]
+    pub ssid: Option<String>,
 
     /// Must be 8 characters or longer
+    #[serde(default)]
     #[serde(deserialize_with = "deserialize_password")]
     pub password: Option<String>,
 
@@ -49,24 +53,14 @@ impl TryFrom<AccessPointArgs> for AccessPointOpts {
             return parse_access_point_opts(config);
         }
 
-        let wireless_ifname = match args.wireless_ifname {
-            Some(ifname) => ifname,
-            None => "".to_string(),
-        };
-
-        let ssid = match args.ssid {
-            Some(ssid) => ssid,
-            None => return Err(anyhow!("Required SSID not specified")),
-        };
-
         let ip4_addr = match &args.ip4_addr {
             Some(addr) => Ipv4Net::from_str(addr.as_str())?,
             None => default_ip4_addr(),
         };
 
         Ok(AccessPointOpts {
-            wireless_ifname,
-            ssid,
+            wireless_ifname: args.wireless_ifname,
+            ssid: args.ssid,
             ip4_addr,
             password: args.password,
         })
@@ -80,9 +74,15 @@ fn parse_access_point_opts(config: &str) -> Result<AccessPointOpts> {
 
 #[instrument(skip(client), err)]
 pub async fn create_access_point(client: &Client, opts: AccessPointOpts) -> Result<()> {
-    if opts.wireless_ifname.is_empty() {
-        return Err(anyhow!("Required wireless interface not specified"));
-    }
+    let wireless_ifname = match &opts.wireless_ifname {
+        Some(ifname) => ifname,
+        None => return Err(anyhow!("Required wireless interface not specified")),
+    };
+
+    let ssid = match &opts.ssid {
+        Some(ssid) => ssid,
+        None => return Err(anyhow!("Required wireless interface not specified")),
+    };
 
     // Create AP struct here so we can comprehensively search
     // for any matching existing connection, should it exist
@@ -108,30 +108,30 @@ pub async fn create_access_point(client: &Client, opts: AccessPointOpts) -> Resu
         Some(c) => {
             debug!(
                 "Found active standalone wired connection with slave ifname \"{}\", deactivating",
-                &opts.wireless_ifname
+                wireless_ifname
             );
             client.deactivate_connection_future(&c).await?;
         }
         None => debug!(
             "No matching active standalone wired connection for interface \"{}\"",
-            &opts.wireless_ifname
+            wireless_ifname
         ),
     };
 
-    let wireless_dev = match client.device_by_iface(&opts.wireless_ifname) {
+    let wireless_dev = match client.device_by_iface(wireless_ifname.as_str()) {
         Some(device) => device,
         None => {
             return Err(anyhow!(
                 "Wired device \"{}\" does not exist, quitting...",
-                &opts.wireless_ifname
+                wireless_ifname
             ));
         }
     };
 
-    info!("Creating access point connection");
+    info!("Creating access point connection \"{}\"", ssid);
     let ap_conn = client.add_connection_future(&ap_conn, true).await?;
 
-    info!("Activating access point connection");
+    info!("Activating access point connection \"{}\"", ssid);
     let ap_conn = client
         .activate_connection_future(Some(&ap_conn), Some(&wireless_dev), None)
         .await?;
@@ -164,7 +164,12 @@ pub async fn create_access_point(client: &Client, opts: AccessPointOpts) -> Resu
         });
     });
 
-    receiver.await?
+    let res = receiver.await?;
+
+    if res.is_ok() {
+        info!("Activated access point connection \"{}\"", ssid);
+    }
+    res
 }
 
 pub fn create_access_point_connection(opts: &AccessPointOpts) -> Result<SimpleConnection> {
@@ -176,16 +181,33 @@ pub fn create_access_point_connection(opts: &AccessPointOpts) -> Result<SimpleCo
 
     // General connection settings
     s_connection.set_type(Some(SETTING_WIRELESS_SETTING_NAME));
-    s_connection.set_id(Some(&opts.ssid));
-    s_connection.set_interface_name(Some(&opts.wireless_ifname));
     s_connection.set_autoconnect(false);
 
-    // Wifi-specific settings
-    s_wireless.set_ssid(Some(&(opts.ssid.as_bytes().into())));
+    match &opts.ssid {
+        Some(ssid) => {
+            s_connection.set_id(Some(ssid));
+        }
+        None => return Err(anyhow!("Required SSID not specified")),
+    };
+
+    match &opts.wireless_ifname {
+        Some(ifname) => s_connection.set_interface_name(Some(ifname)),
+        None => return Err(anyhow!("Required wireless interface not specified")),
+    };
+
+    // Wifi settings
     //s_wireless.set_band(Some("bg"));
     s_wireless.set_hidden(false);
     s_wireless.set_mode(Some(SETTING_WIRELESS_MODE_AP));
 
+    match &opts.ssid {
+        Some(ssid) => {
+            s_wireless.set_ssid(Some(&(ssid.as_bytes().into())));
+        }
+        None => return Err(anyhow!("Required SSID not specified")),
+    };
+
+    // Wifi security settings
     if let Some(password) = &opts.password {
         let s_wireless_security = SettingWirelessSecurity::new();
         s_wireless_security.set_key_mgmt(Some("wpa-psk"));
@@ -206,4 +228,146 @@ pub fn create_access_point_connection(opts: &AccessPointOpts) -> Result<SimpleCo
     connection.add_setting(s_ip4);
 
     Ok(connection)
+}
+
+#[cfg(test)]
+mod test {
+    use ipnet::Ipv4Net;
+
+    use super::*;
+    use crate::util::DEFAULT_IP4_ADDR;
+
+    // Expect empty interface which should be caught later on
+    // when attempting to create connection
+    #[test]
+    fn no_wireless_interface() {
+        let cfg = "
+            ssid: \"test_ssid\"
+            password: \"test_password\"
+            ip4_addr: \"172.16.0.1/24\"
+        ";
+
+        let opts = parse_access_point_opts(cfg).unwrap();
+        assert!(opts.wireless_ifname.is_none());
+    }
+
+    #[test]
+    fn empty_wireless_interface() {
+        let cfg = "
+            wireless_interface: \"\"
+            ssid: \"test_ssid\"
+            password: \"test_password\"
+            ip4_addr: \"172.16.0.1/24\"
+        ";
+
+        let opts = parse_access_point_opts(cfg).unwrap();
+        assert!(opts.wireless_ifname.is_none());
+    }
+
+    #[test]
+    fn no_ssid() {
+        let cfg = "
+            wireless_interface: \"test_interface\"
+            password: \"test_password\"
+            ip4_addr: \"172.16.0.1/24\"
+        ";
+
+        let opts = parse_access_point_opts(cfg).unwrap();
+        assert!(opts.ssid.is_none());
+    }
+
+    // Expect empty interface which should be caught later on
+    // when attempting to create connection
+    #[test]
+    fn empty_ssid() {
+        let cfg = "
+            wireless_interface: \"test_interface\"
+            ssid: \"\"
+            password: \"test_password\"
+            ip4_addr: \"172.16.0.1/24\"
+        ";
+
+        let opts = parse_access_point_opts(cfg).unwrap();
+        assert!(opts.ssid.is_none());
+    }
+
+    #[test]
+    fn no_password() {
+        let cfg = "
+            wireless_interface: \"test_interface\"
+            ssid: \"test_ssid\"
+            ip4_addr: \"172.16.0.1/24\"
+        ";
+
+        let opts = parse_access_point_opts(cfg).unwrap();
+        assert!(opts.password.is_none())
+    }
+
+    #[test]
+    fn empty_password() {
+        let cfg = "
+            wireless_interface: \"test_interface\"
+            ssid: \"test_ssid\"
+            password: \"\"
+            ip4_addr: \"172.16.0.1/24\"
+        ";
+
+        let opts = parse_access_point_opts(cfg).unwrap();
+        assert!(opts.password.is_none())
+    }
+
+    #[test]
+    #[should_panic]
+    fn less_than_8_char_password() {
+        let cfg = "
+            wireless_interface: \"test_interface\"
+            ssid: \"test_ssid\"
+            password: \"123\"
+            ip4_addr: \"172.16.0.1/24\"
+        ";
+
+        parse_access_point_opts(cfg).unwrap();
+    }
+
+    // Make sure use default address/subnet when no ip4_addr specified
+    #[test]
+    fn no_ip4_addr() {
+        let cfg = "
+            wireless_interface: \"test_interface\"
+            ssid: \"test_ssid\"
+            password: \"test_password\"
+        ";
+
+        let opts = parse_access_point_opts(cfg).unwrap();
+
+        let ipv_net = Ipv4Net::from_str(DEFAULT_IP4_ADDR).unwrap();
+        assert_eq!(ipv_net.addr(), opts.ip4_addr.addr());
+        assert_eq!(ipv_net.prefix_len(), opts.ip4_addr.prefix_len());
+    }
+
+    #[test]
+    #[should_panic]
+    fn empty_ip4_addr() {
+        let cfg = "
+            wireless_interface: \"test_interface\"
+            ssid: \"test_ssid\"
+            password: \"123\"
+            ip4_addr: \"\"
+        ";
+
+        parse_access_point_opts(cfg).unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn no_ip4_addr_subnet() {
+        let cfg = "
+            wireless_interface: \"test_interface\"
+            ssid: \"test_ssid\"
+            password: \"test_password\"
+            ip4_addr: \"172.16.0.1\"
+        ";
+
+        parse_access_point_opts(cfg).unwrap();
+    }
 }

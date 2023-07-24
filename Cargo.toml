@@ -16,6 +16,7 @@ nm = { git = "https://github.com/balena-io-modules/libnm-rs.git" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
+serde_with = "1.4"
 
 # Logging
 tracing = "0.1"
