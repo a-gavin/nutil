@@ -1,0 +1,5 @@
+# Change "slave_interfaces" field to reflect wired interfaces available on your system
+bond_interface: bond0
+bond_mode: !ActiveBackup
+slave_interfaces:
+  - enp2s0

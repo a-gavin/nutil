@@ -1,0 +1,5 @@
+# Change "wireless_interface" field to reflect radio available on your system
+wireless_interface: wlan0
+ssid: "nutil_ssid"
+password: "nutil_password"
+ip4_addr: "172.16.0.1/24"
