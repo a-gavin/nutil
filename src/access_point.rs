@@ -10,7 +10,7 @@ use glib::translate::FromGlib;
 use ipnet::Ipv4Net;
 use nm::*;
 use serde::Deserialize;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use crate::{
     cli::AccessPointArgs,
@@ -223,6 +223,110 @@ pub async fn delete_access_point(client: &Client, opts: AccessPointOpts) -> Resu
     );
     ap_remote_conn.delete_future().await?;
     info!("Access point connection deleted");
+
+    Ok(())
+}
+
+#[instrument(skip(client), err)]
+pub fn access_point_status(client: &Client, opts: AccessPointOpts) -> Result<()> {
+    let ssid = match &opts.ssid {
+        Some(ssid) => ssid,
+        None => return Err(anyhow!("Required SSID not specified")),
+    };
+
+    // Create AP struct here so we can comprehensively search
+    // for any matching existing connection, should it exist
+    // Does not add connection to Network Manager, that happens later
+    let ap_conn = create_access_point_connection(&opts)?;
+
+    // Only possibly active, so assume deactivated until proven otherwise
+    let mut conn_state: ActiveConnectionState = ActiveConnectionState::Deactivated;
+    let mut ip4_addr_strs: Vec<String> = vec![];
+    if let Some(c) = get_active_connection(client, DeviceType::Wifi, &ap_conn) {
+        conn_state = c.state();
+
+        // Gather active IPv4 info
+        if let Some(cfg) = c.ip4_config() {
+            // Active IPv4 addresses (i.e. non-NetworkManager configured)
+            for ip4_addr in cfg.addresses() {
+                let addr = ip4_addr.address().unwrap(); // TODO
+                let addr_str = addr.as_str();
+                ip4_addr_strs.push(format!("{}\t(active)", addr_str));
+            }
+        } else {
+            // Expected when bond is waiting to get IP information.
+            // Possible when backing devices are used for other
+            // non-bond slave connections but bond connection is active
+            warn!(
+                "Unable to get IPv4 config for active access point connection \"{}\"",
+                ssid
+            )
+        }
+    };
+
+    // Try to get connection that matches what we want from NetworkManager
+    // If it doesn't exist, no sense continuing
+    let bond_remote_conn = match get_connection(client, DeviceType::Wifi, &ap_conn) {
+        Some(c) => c,
+        None => {
+            return Err(anyhow!(
+                "Access point connection \"{}\" does not exist",
+                ssid
+            ));
+        }
+    };
+    let bond_conn = bond_remote_conn.upcast::<Connection>();
+
+    // Gather bond static info
+    let bond_ip4_settings = match bond_conn.setting_ip4_config() {
+        Some(c) => c,
+        None => {
+            return Err(anyhow!("Unable to get connection ip4 settings"));
+        }
+    };
+
+    let ip4_method_gstr = match bond_ip4_settings.method() {
+        Some(m) => m,
+        None => return Err(anyhow!("Unable to get ip4 configuration method")),
+    };
+    let ip4_method = ip4_method_gstr.as_str();
+
+    // Static IPv4 addresses
+    for ix in 0..bond_ip4_settings.num_addresses() {
+        match bond_ip4_settings.address(ix as i32) {
+            // Why does this take a signed int lmao
+            Some(c) => match c.address() {
+                Some(addr) => {
+                    ip4_addr_strs.push(format!("{}\t(static)", addr));
+                }
+                None => warn!("Unable to get address string with index \"{}\"", ix),
+            },
+            None => warn!("Unable to get address with index \"{}\"", ix),
+        }
+    }
+
+    // Begin printing status info
+    println!("Name:\t\t{}", &ssid);
+    println!("Type:\t\taccess point");
+    println!("Active:\t\t{}", get_connection_state_str(conn_state));
+
+    // IPv4 status info
+    println!("IPv4:");
+    println!("  Method:\t{}", ip4_method);
+
+    print!("  Addresses:");
+    if ip4_addr_strs.is_empty() {
+        // Print first addr on same line, but if no addrs, need newline
+        println!();
+    }
+    for (ix, addr) in ip4_addr_strs.iter().enumerate() {
+        if ix == 0 {
+            // Print first IP addr on same line as "Addresses"
+            println!("\t{}", addr);
+            continue;
+        }
+        println!("\t\t{}", addr);
+    }
 
     Ok(())
 }

@@ -16,7 +16,6 @@ pub struct App {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// UNIMPLEMENTED
     // Configure NetworkManager-managed access point (wireless) connections
     AccessPoint {
         #[clap(value_enum)]

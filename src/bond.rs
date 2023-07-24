@@ -324,6 +324,7 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
 
     // Begin printing status info
     println!("Name:\t\t{}", &opts.bond_ifname);
+    println!("Type:\t\tbond");
     println!("Active:\t\t{}", get_connection_state_str(conn_state));
 
     // Backing connections/devices
