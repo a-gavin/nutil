@@ -10,7 +10,9 @@ use serde::Deserialize;
 use tracing::{debug, info, instrument};
 
 use crate::{
-    access_point::AccessPointOpts, cli::StationArgs, connection::get_active_connection,
+    access_point::{create_access_point_connection, AccessPointOpts},
+    cli::StationArgs,
+    connection::get_active_connection,
     util::deserialize_password,
 };
 
@@ -88,14 +90,11 @@ pub async fn create_station(client: &Client, opts: StationOpts) -> Result<()> {
     // Create STA struct here so we can comprehensively search
     // for any matching existing connection, should it exist
     // Does not add connection to Network Manager, that happens later
+    //
+    // AP connection added for searching purposes. Does not add
+    // connection to Network Manager, it is purely local
     let sta_conn = create_sta_connection(&opts)?;
-
-    // Make sure STA connection with same name does not already exist
-    // If bond connection using same devices does not exist, good to continue
-    // NOTE: See TODO in matching_wifi_connection()
-    //if get_connection(client, DeviceType::Wifi, &sta_conn).is_some() {
-    //    return Err(anyhow!("Station connection already exists, quitting..."));
-    //}
+    let ap_conn = create_access_point_connection(&opts.clone().into())?;
 
     // Check for and deactivate any existing active station connections
     // which share the same wireless interface.
@@ -116,7 +115,21 @@ pub async fn create_station(client: &Client, opts: StationOpts) -> Result<()> {
         ),
     };
 
-    // TODO check for AP conns, need to impl try_from() for StationOpts
+    // Check for and deactivate any matching AP conn
+    match get_active_connection(client, DeviceType::Wifi, &ap_conn) {
+        Some(c) => {
+            debug!(
+                "Found active wireless connection with ifname \"{}\", deactivating",
+                wireless_ifname
+            );
+            client.deactivate_connection_future(&c).await?;
+        }
+        None => debug!(
+            "No matching active wireless connections for interface \"{}\"",
+            wireless_ifname
+        ),
+    };
+
     let wireless_dev = match client.device_by_iface(wireless_ifname.as_str()) {
         Some(device) => device,
         None => {

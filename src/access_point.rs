@@ -15,7 +15,7 @@ use tracing::{debug, info, instrument, warn};
 use crate::{
     cli::AccessPointArgs,
     connection::{get_active_connection, get_connection, get_connection_state_str},
-    station::create_sta_connection,
+    station::{create_sta_connection, StationOpts},
     util::{deserialize_password, DEFAULT_IP4_ADDR},
 };
 
@@ -62,11 +62,26 @@ impl TryFrom<AccessPointArgs> for AccessPointOpts {
     }
 }
 
+impl From<StationOpts> for AccessPointOpts {
+    fn from(opts: StationOpts) -> AccessPointOpts {
+        AccessPointOpts {
+            wireless_ifname: opts.wireless_ifname,
+            ssid: opts.ssid,
+            password: opts.password,
+            ip4_addr: opts.ip4_addr,
+        }
+    }
+}
+
 fn parse_access_point_opts(config: &str) -> Result<AccessPointOpts> {
     let opts: AccessPointOpts = serde_yaml::from_str(config)?;
     Ok(opts)
 }
 
+// TODO: Comment this and other connection types to reflect fact
+// that we don't delete (only deactivate) any existing connections
+// that share same backing interfaces etc. This implies that
+// we allow duplicate connections. It's just up to the user to manage them
 #[instrument(skip(client), err)]
 pub async fn create_access_point(client: &Client, opts: AccessPointOpts) -> Result<()> {
     let wireless_ifname = match &opts.wireless_ifname {
@@ -82,24 +97,30 @@ pub async fn create_access_point(client: &Client, opts: AccessPointOpts) -> Resu
     // Create AP struct here so we can comprehensively search
     // for any matching existing connection, should it exist
     // Does not add connection to Network Manager, that happens later
+    //
+    // STA connection added for searching purposes. Does not add
+    // connection to Network Manager, it is purely local
     let ap_conn = create_access_point_connection(&opts)?;
-
-    // Make sure an AP connection with same name does not already exist
-    // If bond connection using same devices does not exist, good to continue
-    if get_connection(client, DeviceType::Wifi, &ap_conn).is_some() {
-        return Err(anyhow!(
-            "Access point connection already exists, quitting..."
-        ));
-    }
+    let sta_conn = create_sta_connection(&opts.clone().into())?;
 
     // Check for and deactivate any existing active station connections
     // which share the same wireless interface.
-    //
-    // Station connection added for searching purposes. Does not add
-    // connection to Network Manager, it is purely local
-    let sta_conn = create_sta_connection(&opts.clone().into())?;
-
     match get_active_connection(client, DeviceType::Wifi, &sta_conn) {
+        Some(c) => {
+            debug!(
+                "Found active wireless connection with ifname \"{}\", deactivating",
+                wireless_ifname
+            );
+            client.deactivate_connection_future(&c).await?;
+        }
+        None => debug!(
+            "No matching active wireless connections for interface \"{}\"",
+            wireless_ifname
+        ),
+    };
+
+    // Check for and deactivate any matching AP conn
+    match get_active_connection(client, DeviceType::Wifi, &ap_conn) {
         Some(c) => {
             debug!(
                 "Found active wireless connection with ifname \"{}\", deactivating",

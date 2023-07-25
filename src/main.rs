@@ -1,6 +1,3 @@
-// Required for string conversion when getting a connection's SSID
-#![feature(ascii_char)]
-
 use anyhow::{Context, Result};
 use clap::Parser;
 use nm::*;

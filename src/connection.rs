@@ -521,15 +521,6 @@ pub fn matching_wired_connection(conn: &SimpleConnection, cmp_conn: &Connection)
 
 #[instrument(skip_all, parent=None)]
 pub fn matching_wifi_connection(conn: &SimpleConnection, cmp_conn: &Connection) -> bool {
-    // Get SettingConnection obj for both connection and compared connection
-    let conn_settings = match conn.setting_connection() {
-        Some(c) => c,
-        None => {
-            error!("Unable to get connection settings");
-            return false;
-        }
-    };
-
     let cmp_conn_settings = match cmp_conn.setting_connection() {
         Some(c) => c,
         None => {
@@ -537,16 +528,6 @@ pub fn matching_wifi_connection(conn: &SimpleConnection, cmp_conn: &Connection) 
             return false;
         }
     };
-
-    // Get connection id for connections
-    let conn_id = match conn_settings.id() {
-        Some(c) => c,
-        None => {
-            error!("Unable to get connection id");
-            return false;
-        }
-    };
-    let conn_id_str = conn_id.as_str();
 
     let cmp_conn_id = match cmp_conn_settings.id() {
         Some(c) => c,
@@ -572,33 +553,27 @@ pub fn matching_wifi_connection(conn: &SimpleConnection, cmp_conn: &Connection) 
         }
     };
 
-    // Get ifname for both bond connections
-    let conn_ifname = match conn.interface_name() {
-        Some(ifname) => ifname,
-        None => {
-            error!("Unable to get interface name");
+    // Compare backing wireless interface names, if exists in
+    // connection to compare against
+    if let Some(conn_ifname) = conn.interface_name() {
+        let cmp_conn_ifname = match cmp_conn.interface_name() {
+            Some(ifname) => ifname,
+            None => {
+                error!("Unable to get interface name");
+                return false;
+            }
+        };
+
+        if conn_ifname != cmp_conn_ifname {
+            debug!(
+                "Connection \"{}\" ifname \"{}\" does not match desired ifname \"{}\"",
+                cmp_conn_id_str, cmp_conn_ifname, conn_ifname
+            );
             return false;
         }
-    };
-
-    let cmp_conn_ifname = match cmp_conn.interface_name() {
-        Some(ifname) => ifname,
-        None => {
-            error!("Unable to get interface name");
-            return false;
-        }
-    };
-
-    // Compare backing ifnames
-    if conn_ifname != cmp_conn_ifname {
-        debug!(
-            "Connection \"{}\" ifname \"{}\" does not match desired ifname \"{}\"",
-            cmp_conn_id_str, cmp_conn_ifname, conn_ifname
-        );
-        return false;
     }
 
-    // Get wireless settings for both connections
+    // Get wireless settings for both connections (required for both)
     let conn_wireless_settings = match conn.setting_wireless() {
         Some(setting) => setting,
         None => {
@@ -615,53 +590,27 @@ pub fn matching_wifi_connection(conn: &SimpleConnection, cmp_conn: &Connection) 
         }
     };
 
-    // Compare wireless mode
-    let conn_mode = match conn_wireless_settings.mode() {
-        Some(mode) => mode,
-        None => {
-            error!("Unable to get mode");
-            return false;
-        }
-    };
-    let conn_mode = conn_mode.as_str();
-
-    let cmp_conn_mode = match cmp_conn_wireless_settings.mode() {
-        Some(mode) => mode,
-        None => {
-            error!("Unable to get mode");
-            return false;
-        }
-    };
-    let cmp_conn_mode = cmp_conn_mode.as_str();
-
-    if conn_mode != cmp_conn_mode {
-        debug!(
-            "Connection \"{}\" wireless mode \"{}\" does not match desired wireless mode \"{}\"",
-            cmp_conn_id_str, cmp_conn_mode, conn_mode
-        );
-        return false;
-    }
-
-    // Get and compare SSIDs if both connections are APs
-    if conn_mode == "ap" && cmp_conn_mode == "ap" {
-        // TODO: change comparison logic to use option types
-        // which when both Some then do comparison, if not ignore
-        let conn_ssid = match conn_wireless_settings.ssid() {
-            Some(ssid) => ssid,
+    // Compare wireless mode if exists in connection to compare against
+    if let Some(conn_mode) = conn_wireless_settings.mode() {
+        let cmp_conn_mode = match cmp_conn_wireless_settings.mode() {
+            Some(mode) => mode,
             None => {
-                error!("Unable to get ssid");
+                error!("Unable to get mode");
                 return false;
             }
         };
-        let conn_ssid = match conn_ssid.as_ref().as_ascii() {
-            Some(ssid) => ssid,
-            None => {
-                error!("Connection \"{}\" SSID is not ASCII", conn_id_str);
-                return false;
-            }
-        };
-        let conn_ssid = conn_ssid.as_str();
 
+        if conn_mode.as_str() != cmp_conn_mode.as_str() {
+            debug!(
+                "Connection \"{}\" wireless mode \"{}\" does not match desired wireless mode \"{}\"",
+                cmp_conn_id_str, cmp_conn_mode, conn_mode
+            );
+            return false;
+        }
+    };
+
+    // Compare SSID if exists in connection to compare against
+    if let Some(conn_ssid) = conn_wireless_settings.ssid() {
         let cmp_conn_ssid = match cmp_conn_wireless_settings.ssid() {
             Some(ssid) => ssid,
             None => {
@@ -669,22 +618,23 @@ pub fn matching_wifi_connection(conn: &SimpleConnection, cmp_conn: &Connection) 
                 return false;
             }
         };
-        let cmp_conn_ssid = match cmp_conn_ssid.as_ref().as_ascii() {
-            Some(ssid) => ssid,
-            None => {
-                error!("Connection \"{}\" SSID is not ASCII", cmp_conn_id_str);
-                return false;
-            }
-        };
-        let cmp_conn_ssid = cmp_conn_ssid.as_str();
 
         if conn_ssid != cmp_conn_ssid {
             debug!(
-                "Connection \"{}\" SSID \"{}\" does not match desired SSID \"{}\"",
-                cmp_conn_id_str, cmp_conn_ssid, conn_ssid
+                "Connection \"{}\" SSID does not match desired SSID",
+                cmp_conn_id_str,
             );
             return false;
         }
+
+        // TODO: Get SSID strs for logging purposes w/o resorting to nightly
+        //let cmp_conn_ssid = match cmp_conn_ssid.as_ref().as_ascii() {
+        //    Some(ssid) => ssid,
+        //    None => {
+        //        error!("Connection \"{}\" SSID is not ASCII", cmp_conn_id_str);
+        //        return false;
+        //    }
+        //};
     }
 
     true
