@@ -521,6 +521,15 @@ pub fn matching_wired_connection(conn: &SimpleConnection, cmp_conn: &Connection)
 
 #[instrument(skip_all, parent=None)]
 pub fn matching_wifi_connection(conn: &SimpleConnection, cmp_conn: &Connection) -> bool {
+    // Get SettingConnection obj for both connection and compared connection
+    let conn_settings = match conn.setting_connection() {
+        Some(c) => c,
+        None => {
+            error!("Unable to get connection settings");
+            return false;
+        }
+    };
+
     let cmp_conn_settings = match cmp_conn.setting_connection() {
         Some(c) => c,
         None => {
@@ -528,6 +537,16 @@ pub fn matching_wifi_connection(conn: &SimpleConnection, cmp_conn: &Connection) 
             return false;
         }
     };
+
+    // Get connection id for each connection
+    let conn_id = match conn_settings.id() {
+        Some(c) => c,
+        None => {
+            error!("Unable to get connection id");
+            return false;
+        }
+    };
+    let conn_id_str = conn_id.as_str();
 
     let cmp_conn_id = match cmp_conn_settings.id() {
         Some(c) => c,
@@ -539,22 +558,35 @@ pub fn matching_wifi_connection(conn: &SimpleConnection, cmp_conn: &Connection) 
     let cmp_conn_id_str = cmp_conn_id.as_str();
 
     // Ensure compared connection is wireless
-    match cmp_conn.setting_wireless() {
-        Some(c) => {
-            debug!("Connection \"{}\" is wireless connection", cmp_conn_id_str);
-            c
-        }
+    let conn_type = match conn_settings.type_() {
+        Some(c) => c,
         None => {
-            debug!(
-                "Connection \"{}\" is not wireless connection",
-                cmp_conn_id_str
-            );
+            error!("Unable to get connection id");
             return false;
         }
     };
 
-    // Compare backing wireless interface names, if exists in
-    // connection to compare against
+    if conn_type != SETTING_WIRELESS_SETTING_NAME {
+        debug!("Connection \"{}\" is not bond connection", conn_id_str);
+        return false;
+    }
+
+    let cmp_conn_type = match cmp_conn_settings.type_() {
+        Some(c) => c,
+        None => {
+            error!("Unable to get connection id");
+            return false;
+        }
+    };
+
+    if cmp_conn_type != SETTING_WIRELESS_SETTING_NAME {
+        debug!("Connection \"{}\" is not bond connection", cmp_conn_id_str);
+        return false;
+    }
+
+
+    // Compare backing wireless interface names,
+    // if exists in connection to compare against
     if let Some(conn_ifname) = conn.interface_name() {
         let cmp_conn_ifname = match cmp_conn.interface_name() {
             Some(ifname) => ifname,
@@ -648,5 +680,186 @@ pub fn get_connection_state_str(state: ActiveConnectionState) -> &'static str {
         ActiveConnectionState::Deactivating => "deactivating",
         ActiveConnectionState::Unknown => "unknown",
         _ => panic!("Unexpected connection state \"{}\"", state),
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::str::FromStr;
+
+    use ipnet::Ipv4Net;
+
+    use super::*;
+    use crate::util::DEFAULT_IP4_ADDR;
+
+    /// Creates connection with base connection fields initialized to test values.
+    fn create_base_connection() -> SimpleConnection {
+        let connection = SimpleConnection::new();
+
+        // General connection settings
+        let s_connection = SettingConnection::new();
+        s_connection.set_id(Some("test_id"));
+        s_connection.set_type(Some(SETTING_WIRELESS_SETTING_NAME));
+        s_connection.set_autoconnect(false);
+        s_connection.set_interface_name(Some("test_ifname"));
+        connection.add_setting(s_connection);
+
+        connection
+    }
+
+    /// Creates WiFi connection with fields initialized to test values
+    /// except the wireless setting mode. Mode defaults to STA, but seems to be 
+    /// only when added to NetworkManager (i.e. is indeterminate/unset before, haven't bothered to check).
+    ///
+    /// IPv4 settings are set to static with the default IPv4 address and subnet
+    fn create_wifi_connection() -> SimpleConnection {
+        let connection = create_base_connection();
+
+        let s_wireless = SettingWireless::new();
+        let s_wireless_security = SettingWirelessSecurity::new();
+        let s_ip4 = SettingIP4Config::new();
+
+        // Wifi settings
+        s_wireless.set_ssid(Some(&("test_ssid".as_bytes().into())));
+
+        // Wifi security settings
+        s_wireless_security.set_key_mgmt(Some("wpa-psk"));
+        s_wireless_security.set_psk(Some("test_password"));
+
+        // IPv4 settings
+        let ip4_net = Ipv4Net::from_str(DEFAULT_IP4_ADDR).unwrap();
+        let ip4_addr = IPAddress::new(
+            libc::AF_INET,
+            ip4_net.addr().to_string().as_str(),
+            ip4_net.prefix_len() as u32,
+        )
+        .unwrap();
+
+        s_ip4.add_address(&ip4_addr);
+        s_ip4.set_method(Some(SETTING_IP4_CONFIG_METHOD_MANUAL));
+
+        connection.add_setting(s_wireless);
+        connection.add_setting(s_wireless_security);
+        connection.add_setting(s_ip4);
+
+        connection
+    }
+
+    fn create_ap_connection() -> SimpleConnection {
+        let conn = create_wifi_connection();
+
+        let s_wireless = conn.setting_wireless().unwrap();
+        s_wireless.set_mode(Some(SETTING_WIRELESS_MODE_AP));
+
+        conn
+    }
+
+    fn create_sta_connection() -> SimpleConnection {
+        let conn = create_wifi_connection();
+
+        let s_wireless = conn.setting_wireless().unwrap();
+        s_wireless.set_mode(Some(SETTING_WIRELESS_MODE_INFRA));
+
+        conn
+    }
+
+    #[test]
+    fn compare_wifi_conns_wireless_settings() {
+        // 1. All wifi connection fields same, expect pass
+        //    (covers all equal field test cases as nothing is changed)
+        let base_conn = create_ap_connection();
+        let cmp_conn = create_ap_connection().upcast::<Connection>();
+        assert!(matching_wifi_connection(&base_conn, &cmp_conn));
+
+        // 2. No base conn wireless settings, expect fail
+        let base_conn = create_base_connection();
+        let cmp_conn = create_ap_connection().upcast::<Connection>();
+        assert!(!matching_wifi_connection(&base_conn, &cmp_conn));
+
+        // 3. No cmp conn wireless settings, expect fail
+        let base_conn = create_ap_connection();
+        let cmp_conn = create_base_connection().upcast::<Connection>();
+        assert!(!matching_wifi_connection(&base_conn, &cmp_conn));
+    }
+
+    #[test]
+    fn compare_wifi_conns_ifnames() {
+        // 1. No base interface name, should pass as matching
+        //    function should ignore this field when None
+        let base_conn = create_ap_connection();
+        let cmp_conn = create_ap_connection().upcast::<Connection>();
+
+        let s_conn = base_conn.setting_connection().unwrap();
+        s_conn.set_interface_name(None);
+        base_conn.add_setting(s_conn);
+
+        assert!(matching_wifi_connection(&base_conn, &cmp_conn));
+
+        // 2. Different base interface name, should fail
+        let base_conn = create_ap_connection();
+        let cmp_conn = create_ap_connection().upcast::<Connection>();
+
+        let s_conn = base_conn.setting_connection().unwrap();
+        s_conn.set_interface_name(Some("wrong_ifname"));
+        base_conn.add_setting(s_conn);
+
+        assert!(!matching_wifi_connection(&base_conn, &cmp_conn));
+
+        // 3. Different compare interface name, should fail
+        let base_conn = create_ap_connection();
+        let cmp_conn = create_ap_connection().upcast::<Connection>();
+
+        let s_conn = cmp_conn.setting_connection().unwrap();
+        s_conn.set_interface_name(Some("wrong_ifname"));
+        cmp_conn.add_setting(s_conn);
+
+        assert!(!matching_wifi_connection(&base_conn, &cmp_conn));
+    }
+
+    #[test]
+    fn compare_wifi_mode() {
+        // 1. Different base mode, should fail as connection created as an AP but changed to STA
+        let base_conn = create_ap_connection();
+        let cmp_conn = create_sta_connection().upcast::<Connection>();
+        assert!(!matching_wifi_connection(&base_conn, &cmp_conn));
+
+        // 2. Different cmp mode, should fail as connection created as an AP but changed to STA
+        let base_conn = create_sta_connection();
+        let cmp_conn = create_ap_connection().upcast::<Connection>();
+        assert!(!matching_wifi_connection(&base_conn, &cmp_conn));
+    }
+
+    #[test]
+    fn compare_wifi_ssid() {
+        // 1. No SSID, should pass as matching function
+        //    should ignore this field when None
+        let base_conn = create_ap_connection();
+        let cmp_conn = create_ap_connection().upcast::<Connection>();
+
+        let s_wireless = base_conn.setting_wireless().unwrap();
+        s_wireless.set_ssid(None);
+        base_conn.add_setting(s_wireless);
+
+        assert!(matching_wifi_connection(&base_conn, &cmp_conn));
+
+        // 2. Different base SSID, should fail
+        let base_conn = create_ap_connection();
+        let cmp_conn = create_ap_connection().upcast::<Connection>();
+
+        let s_wireless = base_conn.setting_wireless().unwrap();
+        s_wireless.set_ssid(Some(&("wrong_ssid".as_bytes().into())));
+        base_conn.add_setting(s_wireless);
+
+        assert!(!matching_wifi_connection(&base_conn, &cmp_conn));
+
+        // 3. Different cmp SSID, should fail
+        let base_conn = create_ap_connection();
+        let cmp_conn = create_ap_connection().upcast::<Connection>();
+
+        let s_wireless = cmp_conn.setting_wireless().unwrap();
+        s_wireless.set_ssid(Some(&("wrong_ssid".as_bytes().into())));
+        cmp_conn.add_setting(s_wireless);
+
+        assert!(!matching_wifi_connection(&base_conn, &cmp_conn));
     }
 }
