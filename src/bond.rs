@@ -27,7 +27,9 @@ pub enum BondMode {
 pub struct BondOpts {
     /// Required for all commands, so no default if unspecified
     #[serde(rename = "bond_interface")]
-    bond_ifname: String,
+    #[serde(default)]
+    #[serde(with = "serde_with::rust::string_empty_as_none")]
+    bond_ifname: Option<String>,
 
     #[serde(default)]
     bond_mode: BondMode,
@@ -49,11 +51,7 @@ impl TryFrom<BondArgs> for BondOpts {
             return parse_bond_opts(config);
         }
 
-        let bond_ifname = match args.ifname {
-            Some(ifname) => ifname,
-            None => return Err(anyhow!("Bond interface name not specified")),
-        };
-
+        // TODO: Default
         let bond_mode = match args.bond_mode {
             Some(mode) => mode,
             None => {
@@ -62,6 +60,7 @@ impl TryFrom<BondArgs> for BondOpts {
             }
         };
 
+        // TODO: Refactor smelly code
         if args
             .slave_ifnames
             .iter()
@@ -72,7 +71,7 @@ impl TryFrom<BondArgs> for BondOpts {
         }
 
         Ok(BondOpts {
-            bond_ifname,
+            bond_ifname: args.ifname,
             bond_mode,
             slave_ifnames: args.slave_ifnames,
         })
@@ -86,6 +85,11 @@ fn parse_bond_opts(config: &str) -> Result<BondOpts> {
 
 #[instrument(skip(client), err)]
 pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
+    let bond_ifname = match &opts.bond_ifname {
+        Some(ifname) => ifname,
+        None => return Err(anyhow!("Required bond interface not specified")),
+    };
+
     if opts.slave_ifnames.is_empty() {
         return Err(anyhow!(
             "One or more slave interfaces required to create a bond connection"
@@ -95,7 +99,7 @@ pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
     // Create bond structs here so we can comprehensively search
     // for any matching existing connection, should it exist
     // Does not add connection to Network Manager, that happens later
-    let bond_conn = create_bond_connection(&opts.bond_ifname, opts.bond_mode)?;
+    let bond_conn = create_bond_connection(&bond_ifname, opts.bond_mode)?;
 
     // Make sure a bond connection with same name does not already exist
     // If bond connection using same devices does not exist, good to continue
@@ -167,7 +171,7 @@ pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
     client.add_connection_future(&bond_conn, true).await?;
 
     for (wired_dev, slave_ifname) in wired_devs.iter().zip(opts.slave_ifnames.iter()) {
-        let wired_conn = create_wired_connection(slave_ifname, Some(&opts.bond_ifname))?;
+        let wired_conn = create_wired_connection(slave_ifname, Some(&bond_ifname))?;
 
         // Created and configured connection, send it off to NetworkManager
         let wired_conn = client.add_connection_future(&wired_conn, true).await?;
@@ -192,22 +196,27 @@ pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
         None => {
             return Err(anyhow!(
                 "Bond connection \"{}\" not active",
-                &opts.bond_ifname
+                &bond_ifname
             ))
         }
     };
     let res = wait_for_connection_to_activate(&bond_conn).await;
 
     if res.is_ok() {
-        info!("Activated bond connection \"{}\"", &opts.bond_ifname);
+        info!("Activated bond connection \"{}\"", &bond_ifname);
     }
     res
 }
 
 #[instrument(skip(client), err)]
 pub async fn delete_bond(client: &Client, opts: BondOpts) -> Result<()> {
+    let bond_ifname = match &opts.bond_ifname {
+        Some(ifname) => ifname,
+        None => return Err(anyhow!("Required bond interface not specified")),
+    };
+
     // Create matching bond SimpleConnection for comparison
-    let bond_conn = create_bond_connection(&opts.bond_ifname, opts.bond_mode)?;
+    let bond_conn = create_bond_connection(&bond_ifname, opts.bond_mode)?;
 
     // Use created SimpleConnection to find matching connections from NetworkManager
     let bond_remote_conn = match get_connection(client, DeviceType::Bond, &bond_conn) {
@@ -215,14 +224,14 @@ pub async fn delete_bond(client: &Client, opts: BondOpts) -> Result<()> {
         None => {
             return Err(anyhow!(
                 "Required bond connection \"{}\" does not exist, quitting...",
-                &opts.bond_ifname
+                &bond_ifname
             ));
         }
     };
 
     // Deactivate bond connection
     // Automatically deactivates slave connections on success
-    info!("Deactivating bond connection with interface \"{}\" (and associated slave wired connections)", opts.bond_ifname);
+    info!("Deactivating bond connection with interface \"{}\" (and associated slave wired connections)", bond_ifname);
     match get_active_connection(client, DeviceType::Bond, &bond_conn) {
         Some(c) => {
             client.deactivate_connection_future(&c).await?;
@@ -231,7 +240,7 @@ pub async fn delete_bond(client: &Client, opts: BondOpts) -> Result<()> {
         None => {
             info!(
                 "Required bond connection \"{}\" is not active",
-                &opts.bond_ifname
+                &bond_ifname
             );
         }
     };
@@ -239,14 +248,14 @@ pub async fn delete_bond(client: &Client, opts: BondOpts) -> Result<()> {
     // Delete bond connection
     info!(
         "Deleting bond connection with interface \"{}\"",
-        opts.bond_ifname
+        bond_ifname
     );
     bond_remote_conn.delete_future().await?;
     info!("Bond connection deleted");
 
     // Optionally delete wired slave connections
     for slave_ifname in opts.slave_ifnames.iter() {
-        let wired_conn = create_wired_connection(slave_ifname, Some(&opts.bond_ifname))?;
+        let wired_conn = create_wired_connection(slave_ifname, Some(&bond_ifname))?;
 
         match get_connection(client, DeviceType::Ethernet, &wired_conn) {
             Some(c) => c.delete_future().await?,
@@ -264,10 +273,15 @@ pub async fn delete_bond(client: &Client, opts: BondOpts) -> Result<()> {
 
 #[instrument(skip(client), err)]
 pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
+    let bond_ifname = match &opts.bond_ifname {
+        Some(ifname) => ifname,
+        None => return Err(anyhow!("Required bond interface not specified")),
+    };
+
     // Create bond struct here so we can comprehensively search
     // for any matching existing connection, should it exist
     // Does not add connection to Network Manager, that happens later
-    let bond_conn = create_bond_connection(&opts.bond_ifname, opts.bond_mode)?;
+    let bond_conn = create_bond_connection(&bond_ifname, opts.bond_mode)?;
 
     // Only possibly active, so assume deactivated until proven otherwise
     let mut conn_state: ActiveConnectionState = ActiveConnectionState::Deactivated;
@@ -289,7 +303,7 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
             // non-bond slave connections but bond connection is active
             warn!(
                 "Unable to get IPv4 config for active bond connection \"{}\"",
-                opts.bond_ifname
+                bond_ifname
             )
         }
     };
@@ -301,7 +315,7 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
         None => {
             return Err(anyhow!(
                 "Bond connection \"{}\" does not exist",
-                &opts.bond_ifname
+                &bond_ifname
             ));
         }
     };
@@ -335,10 +349,10 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
         }
     }
 
-    let slave_conns = get_slave_connections(client, &opts.bond_ifname, DeviceType::Ethernet);
+    let slave_conns = get_slave_connections(client, &bond_ifname, DeviceType::Ethernet);
 
     // Begin printing status info
-    println!("Name:\t\t{}", &opts.bond_ifname);
+    println!("Name:\t\t{}", &bond_ifname);
     println!("Type:\t\tbond");
     println!("Active:\t\t{}", get_connection_state_str(conn_state));
 
@@ -441,7 +455,6 @@ mod test {
     use super::*;
 
     #[test]
-    #[should_panic]
     fn no_bond_ifname() {
         let cfg = "
             bond_mode: !ActiveBackup
@@ -449,7 +462,8 @@ mod test {
                 - enp2s0
         ";
 
-        parse_bond_opts(cfg).unwrap();
+        let opts = parse_bond_opts(cfg).unwrap();
+        assert!(opts.bond_ifname.is_none());
     }
 
     #[test]
@@ -462,9 +476,7 @@ mod test {
         ";
 
         let opts = parse_bond_opts(cfg).unwrap();
-        assert_eq!(opts.bond_ifname, "");
-        // TODO: Where to check for this? Currently don't. Could check in serde deserializing
-        // or in bond command func itself
+        assert!(opts.bond_ifname.is_none());
     }
 
     // Expect to default to BondMode default
