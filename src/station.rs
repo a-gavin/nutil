@@ -31,7 +31,6 @@ pub struct StationOpts {
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_password")]
     pub password: Option<String>,
-
     #[serde(default)]
     #[serde(with = "serde_with::rust::string_empty_as_none")]
     pub ip4_addr: Option<String>,
@@ -219,4 +218,125 @@ pub fn create_sta_connection(opts: &StationOpts) -> Result<SimpleConnection> {
     Ok(connection)
 }
 
-// TODO: Impl unit tests for create_sta_connection
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    // Expect empty interface which should be caught later on
+    // when attempting to create connection
+    #[test]
+    fn no_wireless_interface() {
+        let cfg = "
+            ssid: \"test_ssid\"
+            password: \"test_password\"
+            ip4_addr: \"172.16.0.1/24\"
+        ";
+
+        let opts = parse_station_opts(cfg).unwrap();
+        assert!(opts.wireless_ifname.is_none());
+    }
+
+    #[test]
+    fn empty_wireless_interface() {
+        let cfg = "
+            wireless_interface: \"\"
+            ssid: \"test_ssid\"
+            password: \"test_password\"
+            ip4_addr: \"172.16.0.1/24\"
+        ";
+
+        let opts = parse_station_opts(cfg).unwrap();
+        assert!(opts.wireless_ifname.is_none());
+    }
+
+    #[test]
+    fn no_ssid() {
+        let cfg = "
+            wireless_interface: \"test_interface\"
+            password: \"test_password\"
+            ip4_addr: \"172.16.0.1/24\"
+        ";
+
+        let opts = parse_station_opts(cfg).unwrap();
+        assert!(opts.ssid.is_none());
+    }
+
+    // Expect empty interface which should be caught later on
+    // when attempting to create connection
+    #[test]
+    fn empty_ssid() {
+        let cfg = "
+            wireless_interface: \"test_interface\"
+            ssid: \"\"
+            password: \"test_password\"
+            ip4_addr: \"172.16.0.1/24\"
+        ";
+
+        let opts = parse_station_opts(cfg).unwrap();
+        assert!(opts.ssid.is_none());
+    }
+
+    #[test]
+    fn no_password() {
+        let cfg = "
+            wireless_interface: \"test_interface\"
+            ssid: \"test_ssid\"
+            ip4_addr: \"172.16.0.1/24\"
+        ";
+
+        let opts = parse_station_opts(cfg).unwrap();
+        assert!(opts.password.is_none())
+    }
+
+    #[test]
+    fn empty_password() {
+        let cfg = "
+            wireless_interface: \"test_interface\"
+            ssid: \"test_ssid\"
+            password: \"\"
+            ip4_addr: \"172.16.0.1/24\"
+        ";
+
+        let opts = parse_station_opts(cfg).unwrap();
+        assert!(opts.password.is_none())
+    }
+
+    #[test]
+    #[should_panic]
+    fn less_than_8_char_password() {
+        let cfg = "
+            wireless_interface: \"test_interface\"
+            ssid: \"test_ssid\"
+            password: \"123\"
+            ip4_addr: \"172.16.0.1/24\"
+        ";
+
+        parse_station_opts(cfg).unwrap();
+    }
+
+    // Make sure use default address/subnet when no ip4_addr specified
+    #[test]
+    fn no_ip4_addr() {
+        let cfg = "
+            wireless_interface: \"test_interface\"
+            ssid: \"test_ssid\"
+            password: \"test_password\"
+        ";
+
+        let opts = parse_station_opts(cfg).unwrap();
+        assert!(opts.ip4_addr.is_none());
+    }
+
+    #[test]
+    #[should_panic]
+    fn empty_ip4_addr() {
+        let cfg = "
+            wireless_interface: \"test_interface\"
+            ssid: \"test_ssid\"
+            password: \"123\"
+            ip4_addr: \"\"
+        ";
+
+        parse_station_opts(cfg).unwrap();
+    }
+}
