@@ -1,4 +1,9 @@
-use anyhow::Result;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use anyhow::{anyhow, Result};
+use futures_channel::oneshot;
+use glib::translate::FromGlib;
 use nm::*;
 use tracing::{debug, error, instrument, warn};
 
@@ -286,6 +291,46 @@ pub fn get_slave_connections(
     }
 
     Some(slave_conns)
+}
+
+// Spawn a new helper thread to poll until connection is fully activated
+pub async fn wait_for_connection_to_activate(conn: &ActiveConnection) -> Result<()> {
+    // No sense polling for activated if already up
+    if conn.state() == ActiveConnectionState::Activated {
+        return Ok(());
+    }
+
+    let (sender, receiver) = oneshot::channel::<Result<()>>();
+    let sender = Rc::new(RefCell::new(Some(sender)));
+
+    // TODO: Impl timeout
+    conn.connect_state_changed(move |_, state, _| {
+        let sender = sender.clone();
+
+        glib::MainContext::ref_thread_default().spawn_local(async move {
+            let state = unsafe { ActiveConnectionState::from_glib(state as _) };
+            debug!("Connection state: {}", get_connection_state_str(state));
+
+            let exit = match state {
+                ActiveConnectionState::Activating => None,
+                ActiveConnectionState::Activated => Some(Ok(())),
+                _ => Some(Err(anyhow!(
+                    "Unexpected connection state \"{}\"",
+                    get_connection_state_str(state)
+                ))),
+            };
+
+            if let Some(result) = exit {
+                let sender = sender.borrow_mut().take();
+
+                if let Some(sender) = sender {
+                    sender.send(result).expect("Sender dropped");
+                }
+            }
+        });
+    });
+
+    receiver.await?
 }
 
 // Determine if provided connection for comparison `cmp_conn` is a bond connection
@@ -610,7 +655,6 @@ pub fn matching_wifi_connection(conn: &SimpleConnection, cmp_conn: &Connection) 
         return false;
     }
 
-
     // Compare backing wireless interface names,
     // if exists in connection to compare against
     if let Some(conn_ifname) = conn.interface_name() {
@@ -770,7 +814,7 @@ mod test {
     }
 
     /// Creates WiFi connection with fields initialized to test values
-    /// except the wireless setting mode. Mode defaults to STA, but seems to be 
+    /// except the wireless setting mode. Mode defaults to STA, but seems to be
     /// only when added to NetworkManager (i.e. is indeterminate/unset before, haven't bothered to check).
     ///
     /// IPv4 settings are set to static with the default IPv4 address and subnet

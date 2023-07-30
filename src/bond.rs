@@ -186,7 +186,22 @@ pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
             .activate_connection_future(Some(&wired_conn), Some(wired_dev), None)
             .await?;
     }
-    Ok(())
+
+    let bond_conn = match get_active_connection(client, DeviceType::Bond, &bond_conn) {
+        Some(c) => c,
+        None => {
+            return Err(anyhow!(
+                "Bond connection \"{}\" not active",
+                &opts.bond_ifname
+            ))
+        }
+    };
+    let res = wait_for_connection_to_activate(&bond_conn).await;
+
+    if res.is_ok() {
+        info!("Activated bond connection \"{}\"", &opts.bond_ifname);
+    }
+    res
 }
 
 #[instrument(skip(client), err)]

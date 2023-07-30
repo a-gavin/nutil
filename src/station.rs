@@ -12,7 +12,7 @@ use tracing::{debug, info, instrument};
 use crate::{
     access_point::{create_access_point_connection, AccessPointOpts},
     cli::StationArgs,
-    connection::get_active_connection,
+    connection::{get_active_connection, wait_for_connection_to_activate},
     util::deserialize_password,
 };
 
@@ -143,13 +143,17 @@ pub async fn create_station(client: &Client, opts: StationOpts) -> Result<()> {
     let sta_conn = client.add_connection_future(&sta_conn, true).await?;
 
     info!("Activating access point connection \"{}\"", ssid);
-    let _sta_conn = client
+    let sta_conn = client
         .activate_connection_future(Some(&sta_conn), Some(&wireless_dev), None)
         .await?;
 
-    // TODO: Impl wait for connection to be Activated state
+    // Waits until station is up and associated, not sure we want that
+    let res = wait_for_connection_to_activate(&sta_conn).await;
 
-    Ok(())
+    if res.is_ok() {
+        info!("Activated access point connection \"{}\"", ssid);
+    }
+    res
 }
 
 pub fn create_sta_connection(opts: &StationOpts) -> Result<SimpleConnection> {

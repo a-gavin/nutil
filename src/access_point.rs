@@ -1,12 +1,9 @@
 use std::fs::File;
-use std::rc::Rc;
+use std::io::Read;
 use std::str;
 use std::str::FromStr;
-use std::{cell::RefCell, io::Read};
 
 use anyhow::{anyhow, Result};
-use futures_channel::oneshot;
-use glib::translate::FromGlib;
 use ipnet::Ipv4Net;
 use nm::*;
 use serde::Deserialize;
@@ -14,7 +11,7 @@ use tracing::{debug, info, instrument, warn};
 
 use crate::{
     cli::AccessPointArgs,
-    connection::{get_active_connection, get_connection, get_connection_state_str},
+    connection::*,
     station::{create_sta_connection, StationOpts},
     util::{deserialize_password, DEFAULT_IP4_ADDR},
 };
@@ -152,35 +149,7 @@ pub async fn create_access_point(client: &Client, opts: AccessPointOpts) -> Resu
         .activate_connection_future(Some(&ap_conn), Some(&wireless_dev), None)
         .await?;
 
-    // Poll until AP is fully activated
-    let (sender, receiver) = oneshot::channel::<Result<()>>();
-    let sender = Rc::new(RefCell::new(Some(sender)));
-
-    // TODO: Impl timeout
-    ap_conn.connect_state_changed(move |_, state, _| {
-        let sender = sender.clone();
-
-        glib::MainContext::ref_thread_default().spawn_local(async move {
-            let state = unsafe { ActiveConnectionState::from_glib(state as _) };
-            debug!("Connection state: {}", get_connection_state_str(state));
-
-            let exit = match state {
-                ActiveConnectionState::Activating => None,
-                ActiveConnectionState::Activated => Some(Ok(())),
-                _ => Some(Err(anyhow!("Unexpected connection state"))),
-            };
-
-            if let Some(result) = exit {
-                let sender = sender.borrow_mut().take();
-
-                if let Some(sender) = sender {
-                    sender.send(result).expect("Sender dropped");
-                }
-            }
-        });
-    });
-
-    let res = receiver.await?;
+    let res = wait_for_connection_to_activate(&ap_conn).await;
 
     if res.is_ok() {
         info!("Activated access point connection \"{}\"", ssid);
