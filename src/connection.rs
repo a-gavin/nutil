@@ -296,6 +296,14 @@ pub fn get_slave_connections(
 #[instrument(skip_all, parent=None)]
 pub fn matching_bond_connection(conn: &SimpleConnection, cmp_conn: &Connection) -> bool {
     // Get SettingConnection obj for both connection and compared connection
+    let conn_settings = match conn.setting_connection() {
+        Some(c) => c,
+        None => {
+            error!("Unable to get connection settings");
+            return false;
+        }
+    };
+
     let cmp_conn_settings = match cmp_conn.setting_connection() {
         Some(c) => c,
         None => {
@@ -304,7 +312,16 @@ pub fn matching_bond_connection(conn: &SimpleConnection, cmp_conn: &Connection) 
         }
     };
 
-    // Get connection id for compared connection
+    // Get connection id for each connection
+    let conn_id = match conn_settings.id() {
+        Some(c) => c,
+        None => {
+            error!("Unable to get connection id");
+            return false;
+        }
+    };
+    let conn_id_str = conn_id.as_str();
+
     let cmp_conn_id = match cmp_conn_settings.id() {
         Some(c) => c,
         None => {
@@ -314,42 +331,51 @@ pub fn matching_bond_connection(conn: &SimpleConnection, cmp_conn: &Connection) 
     };
     let cmp_conn_id_str = cmp_conn_id.as_str();
 
-    // Ensure compared connection is a bond (assume connection desired is a bond)
-    match cmp_conn.setting_bond() {
-        Some(c) => {
-            debug!("Connection \"{}\" is bond connection", cmp_conn_id_str);
-            c
-        }
+    // Ensure both connections are bond (don't assume connection desired is a bond)
+    let conn_type = match conn_settings.type_() {
+        Some(c) => c,
         None => {
-            debug!("Connection \"{}\" is not bond connection", cmp_conn_id_str);
+            error!("Unable to get connection id");
             return false;
         }
     };
 
-    // Get ifname for both bond connections
-    let conn_ifname = match conn.interface_name() {
-        Some(ifname) => ifname,
-        None => {
-            error!("Unable to get interface name");
-            return false;
-        }
-    };
-
-    let cmp_conn_ifname = match cmp_conn.interface_name() {
-        Some(ifname) => ifname,
-        None => {
-            error!("Unable to get interface name");
-            return false;
-        }
-    };
-
-    // Compare backing ifnames
-    if conn_ifname != cmp_conn_ifname {
-        debug!(
-            "Connection \"{}\" ifname \"{}\" does not match desired ifname \"{}\"",
-            cmp_conn_id_str, cmp_conn_ifname, conn_ifname
-        );
+    if conn_type.as_str() != SETTING_BOND_SETTING_NAME {
+        debug!("Connection \"{}\" is not bond connection", conn_id_str);
         return false;
+    }
+
+    let cmp_conn_type = match cmp_conn_settings.type_() {
+        Some(c) => c,
+        None => {
+            error!("Unable to get connection id");
+            return false;
+        }
+    };
+
+    if cmp_conn_type.as_str() != SETTING_BOND_SETTING_NAME {
+        debug!("Connection \"{}\" is not bond connection", cmp_conn_id_str);
+        return false;
+    }
+
+    // Compare backing bond interface names,
+    // if exists in connection to compare against
+    if let Some(conn_ifname) = conn.interface_name() {
+        let cmp_conn_ifname = match cmp_conn.interface_name() {
+            Some(ifname) => ifname,
+            None => {
+                error!("Unable to get interface name");
+                return false;
+            }
+        };
+
+        if conn_ifname != cmp_conn_ifname {
+            debug!(
+                "Connection \"{}\" ifname \"{}\" does not match desired ifname \"{}\"",
+                cmp_conn_id_str, cmp_conn_ifname, conn_ifname
+            );
+            return false;
+        }
     }
 
     true
@@ -692,17 +718,53 @@ mod test {
     use super::*;
     use crate::util::DEFAULT_IP4_ADDR;
 
+    const TEST_ID: &str = "test_id";
+    const TEST_IFNAME: &str = "test_ifname";
+    const TEST_SSID: &str = "test_ssid";
+    const TEST_PASSWORD: &str = "test_password";
+
     /// Creates connection with base connection fields initialized to test values.
     fn create_base_connection() -> SimpleConnection {
         let connection = SimpleConnection::new();
+        let s_ip4 = SettingIP4Config::new();
 
         // General connection settings
         let s_connection = SettingConnection::new();
-        s_connection.set_id(Some("test_id"));
-        s_connection.set_type(Some(SETTING_WIRELESS_SETTING_NAME));
+        s_connection.set_id(Some(TEST_ID));
         s_connection.set_autoconnect(false);
-        s_connection.set_interface_name(Some("test_ifname"));
+        s_connection.set_interface_name(Some(TEST_IFNAME));
+
+        // IPv4 settings
+        let ip4_net = Ipv4Net::from_str(DEFAULT_IP4_ADDR).unwrap();
+        let ip4_addr = IPAddress::new(
+            libc::AF_INET,
+            ip4_net.addr().to_string().as_str(),
+            ip4_net.prefix_len() as u32,
+        )
+        .unwrap();
+
+        s_ip4.add_address(&ip4_addr);
+        s_ip4.set_method(Some(SETTING_IP4_CONFIG_METHOD_MANUAL));
+
         connection.add_setting(s_connection);
+        connection.add_setting(s_ip4);
+
+        connection
+    }
+
+    fn create_bond_connection() -> SimpleConnection {
+        let connection = create_base_connection();
+        let s_bond = SettingBond::new();
+
+        // General connection settings
+        let s_connection = connection.setting_connection().unwrap();
+        s_connection.set_type(Some(SETTING_BOND_SETTING_NAME));
+
+        // Bond-specific settings
+        s_bond.add_option(SETTING_BOND_OPTION_MODE, "active-backup");
+        s_bond.add_option(SETTING_BOND_OPTION_MIIMON, "100");
+
+        connection.add_setting(s_bond);
 
         connection
     }
@@ -717,30 +779,20 @@ mod test {
 
         let s_wireless = SettingWireless::new();
         let s_wireless_security = SettingWirelessSecurity::new();
-        let s_ip4 = SettingIP4Config::new();
+
+        // General connection settings
+        let s_connection = connection.setting_connection().unwrap();
+        s_connection.set_type(Some(SETTING_WIRELESS_SETTING_NAME));
 
         // Wifi settings
-        s_wireless.set_ssid(Some(&("test_ssid".as_bytes().into())));
+        s_wireless.set_ssid(Some(&(TEST_SSID.as_bytes().into())));
 
         // Wifi security settings
         s_wireless_security.set_key_mgmt(Some("wpa-psk"));
-        s_wireless_security.set_psk(Some("test_password"));
-
-        // IPv4 settings
-        let ip4_net = Ipv4Net::from_str(DEFAULT_IP4_ADDR).unwrap();
-        let ip4_addr = IPAddress::new(
-            libc::AF_INET,
-            ip4_net.addr().to_string().as_str(),
-            ip4_net.prefix_len() as u32,
-        )
-        .unwrap();
-
-        s_ip4.add_address(&ip4_addr);
-        s_ip4.set_method(Some(SETTING_IP4_CONFIG_METHOD_MANUAL));
+        s_wireless_security.set_psk(Some(TEST_PASSWORD));
 
         connection.add_setting(s_wireless);
         connection.add_setting(s_wireless_security);
-        connection.add_setting(s_ip4);
 
         connection
     }
@@ -761,6 +813,59 @@ mod test {
         s_wireless.set_mode(Some(SETTING_WIRELESS_MODE_INFRA));
 
         conn
+    }
+
+    #[test]
+    fn compare_bond_conns_conn_type() {
+        // 1. All bond connection fields same, expect pass
+        //    (covers all equal field test cases as nothing is changed)
+        let base_conn = create_bond_connection();
+        let cmp_conn = create_bond_connection().upcast::<Connection>();
+        assert!(matching_bond_connection(&base_conn, &cmp_conn));
+
+        // 2. Base has different type, expect fail
+        let base_conn = create_sta_connection();
+        let cmp_conn = create_bond_connection().upcast::<Connection>();
+        assert!(!matching_bond_connection(&base_conn, &cmp_conn));
+
+        // 3. Compare has different type, expect fail
+        let base_conn = create_bond_connection();
+        let cmp_conn = create_sta_connection().upcast::<Connection>();
+        assert!(!matching_bond_connection(&base_conn, &cmp_conn));
+    }
+
+    #[test]
+    fn compare_bond_conns_ifnames() {
+        // 1. No base interface name, should pass as matching
+        //    function should ignore this field when None
+        let base_conn = create_bond_connection();
+        let cmp_conn = create_bond_connection().upcast::<Connection>();
+
+        let s_conn = base_conn.setting_connection().unwrap();
+        s_conn.set_interface_name(None);
+        base_conn.add_setting(s_conn);
+
+        assert!(matching_bond_connection(&base_conn, &cmp_conn));
+
+        // 2. Different base interface name, should fail
+        let base_conn = create_bond_connection();
+        let cmp_conn = create_bond_connection().upcast::<Connection>();
+
+        let s_conn = base_conn.setting_connection().unwrap();
+        s_conn.set_interface_name(Some("wrong_ifname"));
+        base_conn.add_setting(s_conn);
+
+        assert!(!matching_bond_connection(&base_conn, &cmp_conn));
+
+        // 3. Different compare interface name, should fail
+        let base_conn = create_bond_connection();
+        let cmp_conn = create_bond_connection().upcast::<Connection>();
+
+        let s_conn = cmp_conn.setting_connection().unwrap();
+        s_conn.set_interface_name(Some("wrong_ifname"));
+        cmp_conn.add_setting(s_conn);
+
+        assert!(!matching_bond_connection(&base_conn, &cmp_conn));
     }
 
     #[test]
