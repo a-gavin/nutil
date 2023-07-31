@@ -87,10 +87,7 @@ pub fn get_connection(
             DeviceType::Wifi => matching_wifi_connection(conn, &cmp_conn),
             _ => {
                 // Should never get here given check at beginning of func
-                panic!(
-                    "Unsupported device type \"{}\" for get_connection()",
-                    device_type
-                )
+                panic!("Unsupported device type \"{device_type}\" for get_connection()",)
             }
         };
 
@@ -186,10 +183,7 @@ pub fn get_active_connection(
             DeviceType::Wifi => matching_wifi_connection(conn, &cmp_conn),
             _ => {
                 // Should never get here given check at beginning of func
-                panic!(
-                    "Unsupported device type \"{}\" for get_connection()",
-                    device_type
-                )
+                panic!("Unsupported device type \"{device_type}\" for get_connection()",)
             }
         };
 
@@ -758,7 +752,7 @@ pub fn get_connection_state_str(state: ActiveConnectionState) -> &'static str {
         ActiveConnectionState::Deactivated => "deactivated",
         ActiveConnectionState::Deactivating => "deactivating",
         ActiveConnectionState::Unknown => "unknown",
-        _ => panic!("Unexpected connection state \"{}\"", state),
+        _ => panic!("Unexpected connection state \"{state}\""),
     }
 }
 

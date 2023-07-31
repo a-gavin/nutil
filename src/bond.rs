@@ -91,7 +91,7 @@ pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
         return Err(anyhow!(
             "One or more slave interfaces required to create a bond connection"
         ));
-    } else if opts.slave_ifnames.iter().any(|c| c == "") {
+    } else if opts.slave_ifnames.iter().any(|c| c.is_empty()) {
         return Err(anyhow!("Empty string is not a valid slave interface name"));
     }
 
@@ -171,7 +171,7 @@ pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
 
     info!("Activating bond connection \"{}\"", bond_ifname);
     for (wired_dev, slave_ifname) in wired_devs.iter().zip(opts.slave_ifnames.iter()) {
-        let wired_conn = create_wired_connection(slave_ifname, Some(&bond_ifname))?;
+        let wired_conn = create_wired_connection(slave_ifname, Some(bond_ifname))?;
 
         // Created and configured connection, send it off to NetworkManager
         let wired_conn = client.add_connection_future(&wired_conn, true).await?;
@@ -210,7 +210,7 @@ pub async fn delete_bond(client: &Client, opts: BondOpts) -> Result<()> {
         None => return Err(anyhow!("Required bond interface not specified")),
     };
 
-    if opts.slave_ifnames.iter().any(|c| c == "") {
+    if opts.slave_ifnames.iter().any(|c| c.is_empty()) {
         return Err(anyhow!("Empty string is not a valid slave interface name"));
     }
 
@@ -254,7 +254,7 @@ pub async fn delete_bond(client: &Client, opts: BondOpts) -> Result<()> {
 
     // Optionally delete wired slave connections
     for slave_ifname in opts.slave_ifnames.iter() {
-        let wired_conn = create_wired_connection(slave_ifname, Some(&bond_ifname))?;
+        let wired_conn = create_wired_connection(slave_ifname, Some(bond_ifname))?;
 
         match get_connection(client, DeviceType::Ethernet, &wired_conn) {
             Some(c) => c.delete_future().await?,
@@ -277,7 +277,7 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
         None => return Err(anyhow!("Required bond interface not specified")),
     };
 
-    if opts.slave_ifnames.iter().any(|c| c == "") {
+    if opts.slave_ifnames.iter().any(|c| c.is_empty()) {
         return Err(anyhow!("Empty string is not a valid slave interface name"));
     }
 
@@ -298,7 +298,7 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
             for ip4_addr in cfg.addresses() {
                 let addr = ip4_addr.address().unwrap(); // TODO
                 let addr_str = addr.as_str();
-                ip4_addr_strs.push(format!("{}\t(active)", addr_str));
+                ip4_addr_strs.push(format!("{addr_str}\t(active)"));
             }
         } else {
             // Expected when bond is waiting to get IP information.
@@ -344,7 +344,7 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
             // Why does this take a signed int lmao
             Some(c) => match c.address() {
                 Some(addr) => {
-                    ip4_addr_strs.push(format!("{}\t(static)", addr));
+                    ip4_addr_strs.push(format!("{addr}\t(static)"));
                 }
                 None => warn!("Unable to get address string with index \"{}\"", ix),
             },
@@ -352,7 +352,7 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
         }
     }
 
-    let slave_conns = get_slave_connections(client, &bond_ifname, DeviceType::Ethernet);
+    let slave_conns = get_slave_connections(client, bond_ifname, DeviceType::Ethernet);
 
     // Begin printing status info
     println!("Name:\t\t{}", &bond_ifname);
@@ -372,7 +372,7 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
             match conn.setting_connection() {
                 Some(setting) => {
                     if let Some(slave_ifname) = setting.interface_name() {
-                        slave_ifnames.push(format!("{}", slave_ifname.as_str()));
+                        slave_ifnames.push(slave_ifname.as_str().to_string());
                     }
                 }
                 None => warn!("Unable to get address string with index \"{}\"", ix),
@@ -382,16 +382,16 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
         for (ix, ifname) in slave_ifnames.iter().enumerate() {
             if ix == 0 {
                 // Print first ifname on same line as "Slave devices"
-                println!("\t{}", ifname);
+                println!("\t{ifname}");
                 continue;
             }
-            println!("\t\t{}", ifname);
+            println!("\t\t{ifname}");
         }
     }
 
     // IPv4 status info
     println!("IPv4:");
-    println!("  Method:\t{}", ip4_method);
+    println!("  Method:\t{ip4_method}");
 
     print!("  Addresses:");
     if ip4_addr_strs.is_empty() {
@@ -401,10 +401,10 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
     for (ix, addr) in ip4_addr_strs.iter().enumerate() {
         if ix == 0 {
             // Print first IP addr on same line as "Addresses"
-            println!("\t{}", addr);
+            println!("\t{addr}");
             continue;
         }
-        println!("\t\t{}", addr);
+        println!("\t\t{addr}");
     }
 
     Ok(())

@@ -236,7 +236,7 @@ pub fn access_point_status(client: &Client, opts: AccessPointOpts) -> Result<()>
             for ip4_addr in cfg.addresses() {
                 let addr = ip4_addr.address().unwrap(); // TODO
                 let addr_str = addr.as_str();
-                ip4_addr_strs.push(format!("{}\t(active)", addr_str));
+                ip4_addr_strs.push(format!("{addr_str}\t(active)"));
             }
         } else {
             // Expected when bond is waiting to get IP information.
@@ -282,7 +282,7 @@ pub fn access_point_status(client: &Client, opts: AccessPointOpts) -> Result<()>
             // Why does this take a signed int lmao
             Some(c) => match c.address() {
                 Some(addr) => {
-                    ip4_addr_strs.push(format!("{}\t(static)", addr));
+                    ip4_addr_strs.push(format!("{addr}\t(static)"));
                 }
                 None => warn!("Unable to get address string with index \"{}\"", ix),
             },
@@ -297,7 +297,7 @@ pub fn access_point_status(client: &Client, opts: AccessPointOpts) -> Result<()>
 
     // IPv4 status info
     println!("IPv4:");
-    println!("  Method:\t{}", ip4_method);
+    println!("  Method:\t{ip4_method}");
 
     print!("  Addresses:");
     if ip4_addr_strs.is_empty() {
@@ -307,10 +307,10 @@ pub fn access_point_status(client: &Client, opts: AccessPointOpts) -> Result<()>
     for (ix, addr) in ip4_addr_strs.iter().enumerate() {
         if ix == 0 {
             // Print first IP addr on same line as "Addresses"
-            println!("\t{}", addr);
+            println!("\t{addr}");
             continue;
         }
-        println!("\t\t{}", addr);
+        println!("\t\t{addr}");
     }
 
     Ok(())
