@@ -469,44 +469,54 @@ pub fn matching_wired_connection(conn: &SimpleConnection, cmp_conn: &Connection)
     };
     let cmp_conn_id_str = cmp_conn_id.as_str();
 
-    // Ensure compared connection is wired (assume connection desired is wired)
-    match cmp_conn.setting_wired() {
-        Some(c) => {
-            debug!("Connection \"{}\" is wired", cmp_conn_id_str);
-            c
-        }
-        None => {
-            debug!("Connection \"{}\" is not wired", cmp_conn_id_str);
-            return false;
-        }
-    };
-
-    // Get ifname for both wired connections
-    let conn_ifname = match conn.interface_name() {
+    // Ensure both connections are wired
+    let conn_type = match conn_settings.type_() {
         Some(c) => c,
         None => {
-            error!("Unable to get interface name");
+            error!("Unable to get connection id");
             return false;
         }
     };
 
-    let cmp_conn_ifname = match cmp_conn.interface_name() {
-        Some(c) => c,
-        None => {
-            error!("Unable to get interface name");
-            return false;
-        }
-    };
-
-    // Compare backing ifnames
-    if conn_ifname != cmp_conn_ifname {
-        debug!(
-            "Connection \"{}\" ifname \"{}\" does not match desired ifname \"{}\"",
-            cmp_conn_id_str, cmp_conn_ifname, conn_ifname
-        );
+    if conn_type != SETTING_WIRED_SETTING_NAME {
+        debug!("Connection \"{}\" is not bond connection", conn_id_str);
         return false;
     }
 
+    let cmp_conn_type = match cmp_conn_settings.type_() {
+        Some(c) => c,
+        None => {
+            error!("Unable to get connection id");
+            return false;
+        }
+    };
+
+    if cmp_conn_type != SETTING_WIRED_SETTING_NAME {
+        debug!("Connection \"{}\" is not bond connection", cmp_conn_id_str);
+        return false;
+    }
+
+
+    // Get ifname for both wired connections
+    if let Some(conn_ifname) = conn.interface_name() {
+        let cmp_conn_ifname = match cmp_conn.interface_name() {
+            Some(ifname) => ifname,
+            None => {
+                error!("Unable to get interface name");
+                return false;
+            }
+        };
+
+        if conn_ifname != cmp_conn_ifname {
+            debug!(
+                "Connection \"{}\" ifname \"{}\" does not match desired ifname \"{}\"",
+                cmp_conn_id_str, cmp_conn_ifname, conn_ifname
+            );
+            return false;
+        }
+    }
+
+    // TODO
     // Compare both's master connections, if either is a slave connection
     let conn_master = conn_settings.master();
     let cmp_conn_master = cmp_conn_settings.master();
@@ -628,7 +638,7 @@ pub fn matching_wifi_connection(conn: &SimpleConnection, cmp_conn: &Connection) 
     };
     let cmp_conn_id_str = cmp_conn_id.as_str();
 
-    // Ensure compared connection is wireless
+    // Ensure both connections are wireless
     let conn_type = match conn_settings.type_() {
         Some(c) => c,
         None => {
@@ -764,6 +774,7 @@ mod test {
 
     const TEST_ID: &str = "test_id";
     const TEST_IFNAME: &str = "test_ifname";
+    const TEST_MASTER_IFNAME: &str = "test_master_ifname";
     const TEST_SSID: &str = "test_ssid";
     const TEST_PASSWORD: &str = "test_password";
 
@@ -809,6 +820,18 @@ mod test {
         s_bond.add_option(SETTING_BOND_OPTION_MIIMON, "100");
 
         connection.add_setting(s_bond);
+
+        connection
+    }
+
+    fn create_wired_connection() -> SimpleConnection {
+        let connection = create_base_connection();
+
+        // General connection settings
+        let s_connection = connection.setting_connection().unwrap();
+        s_connection.set_type(Some(SETTING_WIRED_SETTING_NAME));
+        s_connection.set_master(Some(TEST_MASTER_IFNAME));
+        s_connection.set_slave_type(Some(SETTING_BOND_SETTING_NAME));
 
         connection
     }
@@ -911,6 +934,61 @@ mod test {
 
         assert!(!matching_bond_connection(&base_conn, &cmp_conn));
     }
+
+    #[test]
+    fn compare_wired_conns_conn_type() {
+        // 1. All wired connection fields same, expect pass
+        //    (covers all equal field test cases as nothing is changed)
+        let base_conn = create_wired_connection();
+        let cmp_conn = create_wired_connection().upcast::<Connection>();
+        assert!(matching_wired_connection(&base_conn, &cmp_conn));
+
+        // 2. Base has different type, expect fail
+        let base_conn = create_sta_connection();
+        let cmp_conn = create_wired_connection().upcast::<Connection>();
+        assert!(!matching_wired_connection(&base_conn, &cmp_conn));
+
+        // 3. Compare has different type, expect fail
+        let base_conn = create_wired_connection();
+        let cmp_conn = create_sta_connection().upcast::<Connection>();
+        assert!(!matching_wired_connection(&base_conn, &cmp_conn));
+    }
+
+    #[test]
+    fn compare_wired_conns_ifnames() {
+        // 1. No base interface name, should pass as matching
+        //    function should ignore this field when None
+        let base_conn = create_wired_connection();
+        let cmp_conn = create_wired_connection().upcast::<Connection>();
+
+        let s_conn = base_conn.setting_connection().unwrap();
+        s_conn.set_interface_name(None);
+        base_conn.add_setting(s_conn);
+
+        assert!(matching_wired_connection(&base_conn, &cmp_conn));
+
+        // 2. Different base interface name, should fail
+        let base_conn = create_wired_connection();
+        let cmp_conn = create_wired_connection().upcast::<Connection>();
+
+        let s_conn = base_conn.setting_connection().unwrap();
+        s_conn.set_interface_name(Some("wrong_ifname"));
+        base_conn.add_setting(s_conn);
+
+        assert!(!matching_wired_connection(&base_conn, &cmp_conn));
+
+        // 3. Different compare interface name, should fail
+        let base_conn = create_wired_connection();
+        let cmp_conn = create_wired_connection().upcast::<Connection>();
+
+        let s_conn = cmp_conn.setting_connection().unwrap();
+        s_conn.set_interface_name(Some("wrong_ifname"));
+        cmp_conn.add_setting(s_conn);
+
+        assert!(!matching_wired_connection(&base_conn, &cmp_conn));
+    }
+
+    // TODO: Other wired conn tests
 
     #[test]
     fn compare_wifi_conns_wireless_settings() {
