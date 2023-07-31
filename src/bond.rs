@@ -1,9 +1,11 @@
 use std::fs::File;
 use std::io::Read;
 use std::str;
+use std::str::FromStr;
 
 use anyhow::{anyhow, Result};
 use clap::ValueEnum;
+use ipnet::Ipv4Net;
 use nm::*;
 use serde::Deserialize;
 use tracing::{debug, error, info, instrument, warn};
@@ -11,7 +13,7 @@ use tracing::{debug, error, info, instrument, warn};
 use crate::cli::BondArgs;
 use crate::connection::*;
 
-#[derive(Default, ValueEnum, Deserialize, PartialEq, Clone, Debug)]
+#[derive(Default, ValueEnum, Deserialize, PartialEq, Copy, Clone, Debug)]
 pub enum BondMode {
     RoundRobin = 0,
     #[default]
@@ -36,6 +38,10 @@ pub struct BondOpts {
 
     #[serde(default, rename = "slave_interfaces")]
     slave_ifnames: Vec<String>,
+
+    #[serde(default)]
+    #[serde(with = "serde_with::rust::string_empty_as_none")]
+    pub ip4_addr: Option<String>,
 }
 
 impl TryFrom<BondArgs> for BondOpts {
@@ -74,6 +80,7 @@ impl TryFrom<BondArgs> for BondOpts {
             bond_ifname: args.ifname,
             bond_mode,
             slave_ifnames: args.slave_ifnames,
+            ip4_addr: args.ip4_addr,
         })
     }
 }
@@ -99,7 +106,7 @@ pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
     // Create bond structs here so we can comprehensively search
     // for any matching existing connection, should it exist
     // Does not add connection to Network Manager, that happens later
-    let bond_conn = create_bond_connection(&bond_ifname, opts.bond_mode)?;
+    let bond_conn = create_bond_connection(&opts)?;
 
     // Make sure a bond connection with same name does not already exist
     // If bond connection using same devices does not exist, good to continue
@@ -193,12 +200,7 @@ pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
 
     let bond_conn = match get_active_connection(client, DeviceType::Bond, &bond_conn) {
         Some(c) => c,
-        None => {
-            return Err(anyhow!(
-                "Bond connection \"{}\" not active",
-                &bond_ifname
-            ))
-        }
+        None => return Err(anyhow!("Bond connection \"{}\" not active", &bond_ifname)),
     };
     let res = wait_for_connection_to_activate(&bond_conn).await;
 
@@ -216,7 +218,7 @@ pub async fn delete_bond(client: &Client, opts: BondOpts) -> Result<()> {
     };
 
     // Create matching bond SimpleConnection for comparison
-    let bond_conn = create_bond_connection(&bond_ifname, opts.bond_mode)?;
+    let bond_conn = create_bond_connection(&opts)?;
 
     // Use created SimpleConnection to find matching connections from NetworkManager
     let bond_remote_conn = match get_connection(client, DeviceType::Bond, &bond_conn) {
@@ -281,7 +283,7 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
     // Create bond struct here so we can comprehensively search
     // for any matching existing connection, should it exist
     // Does not add connection to Network Manager, that happens later
-    let bond_conn = create_bond_connection(&bond_ifname, opts.bond_mode)?;
+    let bond_conn = create_bond_connection(&opts)?;
 
     // Only possibly active, so assume deactivated until proven otherwise
     let mut conn_state: ActiveConnectionState = ActiveConnectionState::Deactivated;
@@ -407,19 +409,26 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
     Ok(())
 }
 
-pub fn create_bond_connection(bond_ifname: &str, bond_mode: BondMode) -> Result<SimpleConnection> {
+pub fn create_bond_connection(opts: &BondOpts) -> Result<SimpleConnection> {
     let connection = SimpleConnection::new();
 
     let s_connection = SettingConnection::new();
     let s_bond = SettingBond::new();
+    let s_ip4 = SettingIP4Config::new();
 
     // General connection settings
     s_connection.set_type(Some(SETTING_BOND_SETTING_NAME));
-    s_connection.set_id(Some(bond_ifname));
-    s_connection.set_interface_name(Some(bond_ifname));
+
+    match &opts.bond_ifname {
+        Some(ifname) => {
+            s_connection.set_id(Some(ifname));
+            s_connection.set_interface_name(Some(ifname));
+        }
+        None => return Err(anyhow!("Required bond interface not specified")),
+    }
 
     // Bond-specific settings
-    let bond_mode = get_bond_mode_str(bond_mode);
+    let bond_mode = get_bond_mode_str(opts.bond_mode);
     if !s_bond.add_option(SETTING_BOND_OPTION_MODE, bond_mode) {
         error!("Unable to set bond mode option to \"{}\"", bond_mode);
         return Err(anyhow!(
@@ -432,8 +441,28 @@ pub fn create_bond_connection(bond_ifname: &str, bond_mode: BondMode) -> Result<
         return Err(anyhow!("Unable to set bond MIIMON option to \"{}\"", "100"));
     }
 
+    // IPv4 settings
+    match &opts.ip4_addr {
+        Some(addr) => {
+            let ip4_net = Ipv4Net::from_str(addr)?;
+
+            let ip4_addr = IPAddress::new(
+                libc::AF_INET,
+                ip4_net.addr().to_string().as_str(),
+                ip4_net.prefix_len() as u32,
+            )?;
+
+            s_ip4.add_address(&ip4_addr);
+            s_ip4.set_method(Some(SETTING_IP4_CONFIG_METHOD_MANUAL));
+        }
+        None => {
+            s_ip4.set_method(Some(SETTING_IP4_CONFIG_METHOD_AUTO));
+        }
+    }
+
     connection.add_setting(s_connection);
     connection.add_setting(s_bond);
+    connection.add_setting(s_ip4);
 
     Ok(connection)
 }

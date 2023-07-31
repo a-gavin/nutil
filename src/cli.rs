@@ -61,13 +61,17 @@ pub enum Action {
 
 #[derive(Args, Debug)]
 pub struct StationArgs {
+    /// SSID used for station association
     pub ssid: Option<String>,
 
+    /// Wireless radio used to create station
     pub wireless_ifname: Option<String>,
 
-    pub ip4_addr: Option<String>,
-
+    /// Password for SSID (currently WPA-PSK only). If not specified, default to Open
     pub password: Option<String>,
+
+    /// Static IPv4 address. If not specified, default to DHCP
+    pub ip4_addr: Option<String>,
 
     #[clap(skip)]
     pub config: Option<String>,
@@ -75,12 +79,17 @@ pub struct StationArgs {
 
 #[derive(Args, Debug)]
 pub struct AccessPointArgs {
+    /// SSID used for access point
     pub ssid: Option<String>,
 
+    /// Wireless radio used to create access point
     pub wireless_ifname: Option<String>,
 
+    /// Static IPv4 address. If not specified, default to DHCP
+    /// When specified, include subnet mask, e.g. "192.168.0.10/24"
     pub ip4_addr: Option<String>,
 
+    /// Password for SSID (currently WPA-PSK only). If not specified, default to Open
     pub password: Option<String>,
 
     #[clap(skip)]
@@ -96,6 +105,12 @@ pub struct BondArgs {
     /// Bond mode of operation (defaults to ActiveBackup)
     #[clap(value_enum)]
     pub bond_mode: Option<BondMode>,
+
+    /// Static IPv4 address. Use "DHCP" if no static IPv4 address desired.
+    /// When specified, nclude subnet mask, e.g. "192.168.0.10/24"
+    // TODO: Make this truly optional (after slave_ifnames,
+    //       won't compile that way tho as slave_ifnames is variable length)
+    pub ip4_addr: Option<String>,
 
     /// Bond backing wired device interface names (required for creation and deletion)
     #[clap(name = "slave_interfaces")]
