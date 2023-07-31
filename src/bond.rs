@@ -66,16 +66,6 @@ impl TryFrom<BondArgs> for BondOpts {
             }
         };
 
-        // TODO: Refactor smelly code
-        if args
-            .slave_ifnames
-            .iter()
-            .map(|name: &String| name == "ANY")
-            .any(|x| x)
-        {
-            return Err(anyhow!("Slave interface name \"ANY\" is reserved"));
-        }
-
         Ok(BondOpts {
             bond_ifname: args.ifname,
             bond_mode,
@@ -101,6 +91,8 @@ pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
         return Err(anyhow!(
             "One or more slave interfaces required to create a bond connection"
         ));
+    } else if opts.slave_ifnames.iter().any(|c| c == "") {
+        return Err(anyhow!("Empty string is not a valid slave interface name"));
     }
 
     // Create bond structs here so we can comprehensively search
@@ -141,7 +133,7 @@ pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
         };
 
         // If detect an active slave connection with desired slave interface then error and exit
-        let existing_wired_conn_slave = create_wired_connection(slave_ifname, Some("ANY"))?;
+        let existing_wired_conn_slave = create_wired_connection(slave_ifname, Some(""))?;
         match get_active_connection(client, DeviceType::Ethernet, &existing_wired_conn_slave) {
             Some(_) => {
                 return Err(anyhow!(
@@ -174,9 +166,10 @@ pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
     // Bond connection doesn't exist and backing ethernet devices exist,
     // so create new bond connection (using newly-created wired connections
     // which are backed by existing wired devices)
-    info!("Creating bond connection");
+    info!("Creating bond connection \"{}\"", bond_ifname);
     client.add_connection_future(&bond_conn, true).await?;
 
+    info!("Activating bond connection \"{}\"", bond_ifname);
     for (wired_dev, slave_ifname) in wired_devs.iter().zip(opts.slave_ifnames.iter()) {
         let wired_conn = create_wired_connection(slave_ifname, Some(&bond_ifname))?;
 
@@ -216,6 +209,10 @@ pub async fn delete_bond(client: &Client, opts: BondOpts) -> Result<()> {
         Some(ifname) => ifname,
         None => return Err(anyhow!("Required bond interface not specified")),
     };
+
+    if opts.slave_ifnames.iter().any(|c| c == "") {
+        return Err(anyhow!("Empty string is not a valid slave interface name"));
+    }
 
     // Create matching bond SimpleConnection for comparison
     let bond_conn = create_bond_connection(&opts)?;
@@ -279,6 +276,10 @@ pub fn bond_status(client: &Client, opts: BondOpts) -> Result<()> {
         Some(ifname) => ifname,
         None => return Err(anyhow!("Required bond interface not specified")),
     };
+
+    if opts.slave_ifnames.iter().any(|c| c == "") {
+        return Err(anyhow!("Empty string is not a valid slave interface name"));
+    }
 
     // Create bond struct here so we can comprehensively search
     // for any matching existing connection, should it exist

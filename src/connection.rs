@@ -496,7 +496,6 @@ pub fn matching_wired_connection(conn: &SimpleConnection, cmp_conn: &Connection)
         return false;
     }
 
-
     // Get ifname for both wired connections
     if let Some(conn_ifname) = conn.interface_name() {
         let cmp_conn_ifname = match cmp_conn.interface_name() {
@@ -539,19 +538,19 @@ pub fn matching_wired_connection(conn: &SimpleConnection, cmp_conn: &Connection)
         let conn_master = conn_master.unwrap();
         let cmp_conn_master = cmp_conn_master.unwrap();
 
-        // ANY master is reserved to indicate we're searching for
+        // Empty string master is reserved to indicate we're searching for
         // any wired connection with all matching properties save
         // the master device.
         //
         // In other words, we're looking for any wired connection we want to mess with
         // that's already being used for something else.
-        if conn_master != cmp_conn_master && conn_master != "ANY" {
+        if conn_master != cmp_conn_master && conn_master != "" {
             debug!(
                 "Connection \"{}\" and compared connection \"{}\" have different master devices",
                 conn_id_str, cmp_conn_id_str
             );
             return false;
-        } else if conn_master == "ANY" {
+        } else if conn_master == "" {
             debug!(
                 "Connection \"{}\" and compared connection \"{}\" have different master devices, but match otherwise",
                 conn_id_str, cmp_conn_id_str

@@ -139,10 +139,10 @@ pub async fn create_station(client: &Client, opts: StationOpts) -> Result<()> {
         }
     };
 
-    info!("Creating access point connection \"{}\"", ssid);
+    info!("Creating station connection \"{}\"", ssid);
     let sta_conn = client.add_connection_future(&sta_conn, true).await?;
 
-    info!("Activating access point connection \"{}\"", ssid);
+    info!("Activating station connection \"{}\"", ssid);
     let sta_conn = client
         .activate_connection_future(Some(&sta_conn), Some(&wireless_dev), None)
         .await?;
