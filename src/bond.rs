@@ -95,6 +95,8 @@ pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
         return Err(anyhow!("Empty string is not a valid slave interface name"));
     }
 
+    // TODO: Deal w/ duplicate slave ifnames specified
+
     // Create bond structs here so we can comprehensively search
     // for any matching existing connection, should it exist
     // Does not add connection to Network Manager, that happens later
@@ -214,6 +216,8 @@ pub async fn delete_bond(client: &Client, opts: BondOpts) -> Result<()> {
         return Err(anyhow!("Empty string is not a valid slave interface name"));
     }
 
+    // TODO: Deal w/ duplicate slave ifnames specified
+
     // Create matching bond SimpleConnection for comparison
     let bond_conn = create_bond_connection(&opts)?;
 
@@ -252,9 +256,33 @@ pub async fn delete_bond(client: &Client, opts: BondOpts) -> Result<()> {
     bond_remote_conn.delete_future().await?;
     info!("Bond connection deleted");
 
-    // Optionally delete wired slave connections
+    let slave_conns = get_slave_connections(client, bond_ifname, DeviceType::Ethernet);
+
+    let mut slave_ifnames: Vec<String> = vec![];
+    if let Some(slave_conns) = slave_conns {
+        for (ix, conn) in slave_conns.iter().enumerate() {
+            match conn.setting_connection() {
+                Some(setting) => {
+                    if let Some(slave_ifname) = setting.interface_name() {
+                        slave_ifnames.push(slave_ifname.as_str().to_string());
+                    }
+                }
+                None => warn!("Unable to get address string with index \"{}\"", ix),
+            }
+        }
+    }
+
+    // Optionally delete wired slave connections if associated with bond connection to be deleted
     for slave_ifname in opts.slave_ifnames.iter() {
         let wired_conn = create_wired_connection(slave_ifname, Some(bond_ifname))?;
+
+        if !slave_ifnames.contains(slave_ifname) {
+            warn!(
+                "Not deleting wired connection \"{}\" which is not associated with bond \"{}\"",
+                slave_ifname, bond_ifname
+            );
+            continue;
+        }
 
         match get_connection(client, DeviceType::Ethernet, &wired_conn) {
             Some(c) => c.delete_future().await?,

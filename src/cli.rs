@@ -54,7 +54,12 @@ pub enum Command {
 
 #[derive(ValueEnum, Clone, Debug)]
 pub enum Action {
+    /// During connection creation, any connections which share interfaces
+    /// with the desired connection are deactivated but not deleted. This
+    /// includes any slave interfaces, if the desired connection uses such.
     Create,
+    /// During connection deletion, any slave interfaces specified that are
+    /// are associated with the connection to be deleted are also deleted.
     Delete,
     Status,
 }
