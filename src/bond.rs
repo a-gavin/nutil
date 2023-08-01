@@ -57,12 +57,12 @@ impl TryFrom<BondArgs> for BondOpts {
             return parse_bond_opts(config);
         }
 
-        // TODO: Default
         let bond_mode = match args.bond_mode {
             Some(mode) => mode,
             None => {
-                info!("Bond mode not specified, defaulting to \"ActiveBackup\"");
-                BondMode::ActiveBackup
+                let mode: BondMode = Default::default();
+                info!("Bond mode not specified, defaulting to \"{}\"", get_bond_mode_str(mode));
+                mode
             }
         };
 
@@ -545,10 +545,10 @@ mod test {
             slave_interfaces:
                 - enp2s0
         ";
+        let default_mode: BondMode = Default::default();
 
         let opts = parse_bond_opts(cfg).unwrap();
-        assert_eq!(opts.bond_mode, BondMode::ActiveBackup);
-        // TODO: More intelligently get default so that if changes this test continues to work
+        assert_eq!(opts.bond_mode, default_mode);
     }
 
     #[test]
