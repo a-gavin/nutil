@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::Read;
 use std::str;
@@ -37,7 +38,7 @@ pub struct BondOpts {
     bond_mode: BondMode,
 
     #[serde(default, rename = "slave_interfaces")]
-    slave_ifnames: Vec<String>,
+    slave_ifnames: HashSet<String>,
 
     #[serde(default)]
     #[serde(with = "serde_with::rust::string_empty_as_none")]
@@ -69,7 +70,7 @@ impl TryFrom<BondArgs> for BondOpts {
         Ok(BondOpts {
             bond_ifname: args.ifname,
             bond_mode,
-            slave_ifnames: args.slave_ifnames,
+            slave_ifnames: HashSet::from_iter(args.slave_ifnames.into_iter()),
             ip4_addr: args.ip4_addr,
         })
     }
@@ -87,6 +88,9 @@ pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
         None => return Err(anyhow!("Required bond interface not specified")),
     };
 
+    // Only need to check if no or empty slave ifnames specified.
+    // Duplicates taken care of by HashSet, and existence of interface
+    // check by NetworkManager itself (which we handle the error of).
     if opts.slave_ifnames.is_empty() {
         return Err(anyhow!(
             "One or more slave interfaces required to create a bond connection"
@@ -94,8 +98,6 @@ pub async fn create_bond(client: &Client, opts: BondOpts) -> Result<()> {
     } else if opts.slave_ifnames.iter().any(|c| c.is_empty()) {
         return Err(anyhow!("Empty string is not a valid slave interface name"));
     }
-
-    // TODO: Deal w/ duplicate slave ifnames specified
 
     // Create bond structs here so we can comprehensively search
     // for any matching existing connection, should it exist
@@ -216,8 +218,6 @@ pub async fn delete_bond(client: &Client, opts: BondOpts) -> Result<()> {
     if opts.slave_ifnames.iter().any(|c| c.is_empty()) {
         return Err(anyhow!("Empty string is not a valid slave interface name"));
     }
-
-    // TODO: Deal w/ duplicate slave ifnames specified
 
     // Create matching bond SimpleConnection for comparison
     let bond_conn = create_bond_connection(&opts)?;
