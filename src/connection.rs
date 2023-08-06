@@ -823,6 +823,15 @@ mod test {
         // General connection settings
         let s_connection = connection.setting_connection().unwrap();
         s_connection.set_type(Some(SETTING_WIRED_SETTING_NAME));
+
+        connection
+    }
+
+    fn create_wired_slave_connection() -> SimpleConnection {
+        let connection = create_wired_connection();
+
+        // General connection settings
+        let s_connection = connection.setting_connection().unwrap();
         s_connection.set_master(Some(TEST_MASTER_IFNAME));
         s_connection.set_slave_type(Some(SETTING_BOND_SETTING_NAME));
 
@@ -981,7 +990,45 @@ mod test {
         assert!(!matching_wired_connection(&base_conn, &cmp_conn));
     }
 
-    // TODO: Other wired conn tests
+    #[test]
+    fn compare_wired_conns_master_ifname() {
+        // 1. Matching master ifname, expect pass
+        let base_conn = create_wired_slave_connection();
+        let cmp_conn = create_wired_slave_connection().upcast::<Connection>();
+        assert!(matching_wired_connection(&base_conn, &cmp_conn));
+
+        // 2. Compare is not slave connection, expect fail
+        let base_conn = create_wired_slave_connection();
+        let cmp_conn = create_wired_connection().upcast::<Connection>();
+        assert!(!matching_wired_connection(&base_conn, &cmp_conn));
+
+        // 3. Base is not slave connection, expect fail
+        let base_conn = create_wired_connection();
+        let cmp_conn = create_wired_slave_connection().upcast::<Connection>();
+        assert!(!matching_wired_connection(&base_conn, &cmp_conn));
+
+        // 4. Both are slave connections but base uses custom empty string
+        //    to match for any master ifname, expect pass
+        let base_conn = create_wired_slave_connection();
+        let cmp_conn = create_wired_slave_connection().upcast::<Connection>();
+
+        let s_conn = base_conn.setting_connection().unwrap();
+        s_conn.set_master(Some(""));
+        base_conn.add_setting(s_conn);
+
+        assert!(matching_wired_connection(&base_conn, &cmp_conn));
+
+        // 5. Both are slave connections but compare uses custom empty string
+        //    which should only be used for base connection, expect fail
+        let base_conn = create_wired_slave_connection();
+        let cmp_conn = create_wired_slave_connection().upcast::<Connection>();
+
+        let s_conn = cmp_conn.setting_connection().unwrap();
+        s_conn.set_master(Some(""));
+        cmp_conn.add_setting(s_conn);
+
+        assert!(!matching_wired_connection(&base_conn, &cmp_conn));
+    }
 
     #[test]
     fn compare_wifi_conns_wireless_settings() {
